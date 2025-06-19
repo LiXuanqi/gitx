@@ -163,6 +163,7 @@ pub struct PRStatusInfo {
 
 impl PRStatusInfo {
     /// Create from commit metadata and message
+    #[allow(dead_code)]
     pub fn from_commit_and_metadata(commit_id: String, commit_message: String, metadata: &CommitMetadata) -> Self {
         let latest_incremental = metadata.incremental_commits.last().cloned();
         

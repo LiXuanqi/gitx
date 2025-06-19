@@ -1,6 +1,5 @@
 use octocrab::Octocrab;
 use serde::{Deserialize, Serialize};
-use std::env;
 use git2::Repository;
 use url::Url;
 use crate::metadata::CommitMetadata;
@@ -29,9 +28,9 @@ pub struct GitHubClient {
 impl GitHubClient {
     /// Create a new GitHub client
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // Get GitHub token from environment
-        let token = env::var("GITHUB_TOKEN")
-            .map_err(|_| "GITHUB_TOKEN environment variable not set")?;
+        // Get GitHub token from config or environment
+        let token = crate::config::get_github_token()
+            .ok_or("GitHub token not configured. Run 'gitx init' to set up.")?;
         
         // Initialize octocrab with token
         let octocrab = Octocrab::builder()
@@ -195,7 +194,7 @@ fn format_commit_type(commit_type: &crate::metadata::IncrementalCommitType) -> &
 
 /// Check if GitHub token is available
 pub fn check_github_token() -> bool {
-    env::var("GITHUB_TOKEN").is_ok()
+    crate::config::get_github_token().is_some()
 }
 
 /// GitHub PR status information

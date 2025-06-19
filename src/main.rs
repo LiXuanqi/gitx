@@ -6,6 +6,7 @@ mod branch_naming;
 mod metadata;
 mod github;
 mod status_display;
+mod config;
 
 #[derive(Parser)]
 #[command(name = "gitx")]
@@ -42,6 +43,8 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Initialize gitx configuration for this repository
+    Init,
     /// Clean up merged PRs and sync with remote
     Land {
         /// Clean up all merged PRs
@@ -149,6 +152,16 @@ async fn main() {
                 Err(e) => {
                     eprintln!("Error running git commit: {}", e);
                     std::process::exit(1);
+                }
+            }
+        }
+        Commands::Init => {
+            match config::interactive_init() {
+                Ok(()) => {
+                    // Initialization completed successfully
+                }
+                Err(e) => {
+                    eprintln!("Error during initialization: {}", e);
                 }
             }
         }
