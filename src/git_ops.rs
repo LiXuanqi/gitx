@@ -93,7 +93,7 @@ fn get_commits_needing_processing_impl(latest_only: bool) -> Result<Vec<CommitUp
         let mut found_metadata_for_position = false;
         
         // Check if we have metadata for this commit
-        if let Some(existing_metadata) = metadata::get_commit_metadata(&oid)? {
+        if let Some(existing_metadata) = metadata::get_commit_metadata(&oid).map_err(|e| git2::Error::from_str(&e.to_string()))? {
             // Check if the stored original commit ID matches current commit
             if existing_metadata.is_commit_changed(&current_commit_id) {
                 // This means the commit was amended - we need an incremental update
@@ -264,7 +264,7 @@ pub async fn create_transient_pr_branch_with_github(
     // 1. Create temporary local branch
     let commit = repo.find_commit(commit_info.id).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     let mut temp_branch = repo.branch(&commit_info.potential_branch_name, &commit, false)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     // 2. Create GitHub client and push branch
     let github_client = github::GitHubClient::new().await?;
@@ -277,7 +277,7 @@ pub async fn create_transient_pr_branch_with_github(
         commit_info.id.to_string()
     );
     metadata::store_commit_metadata(&commit_info.id, &commit_metadata)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     // 4. Create the PR
     let pr_title = commit_message.lines().next().unwrap_or("Untitled commit").to_string();
@@ -293,7 +293,7 @@ pub async fn create_transient_pr_branch_with_github(
     // 5. Update metadata with PR number
     let updated_metadata = commit_metadata.with_pr_number(pr_info.number);
     metadata::update_commit_metadata(&commit_info.id, &updated_metadata)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     // 6. Delete the local branch (keep only on GitHub)
     temp_branch.delete().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
@@ -313,7 +313,7 @@ pub async fn create_incremental_commit_with_github(
     if !enable_github {
         // Local-only mode: create persistent local incremental commit
         create_incremental_commit(original_commit_oid, updated_commit_oid, pr_metadata)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            .map_err(|e| e)?;
         return Ok(());
     }
     
@@ -343,7 +343,7 @@ pub async fn create_transient_incremental_commit_with_github(
     // 1. Create temporary local branch with incremental commit
     let updated_commit = repo.find_commit(*updated_commit_oid).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     let mut temp_branch = repo.branch(&pr_metadata.pr_branch_name, &updated_commit, false)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     // 2. Create incremental commit on the temp branch
     let signature = repo.signature().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
@@ -361,7 +361,7 @@ pub async fn create_transient_incremental_commit_with_github(
         &incremental_message,
         &tree,
         &[&updated_commit],
-    ).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    ).map_err(|e| e)?;
     
     // 3. Push the updated branch to GitHub
     let github_client = github::GitHubClient::new().await?;
@@ -374,7 +374,7 @@ pub async fn create_transient_incremental_commit_with_github(
         metadata::IncrementalCommitType::AmendedCommit,
     );
     metadata::update_commit_metadata(original_commit_oid, &updated_metadata)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     // 5. Update the GitHub PR
     let commit_message = updated_commit.message().unwrap_or("");
@@ -399,7 +399,7 @@ pub async fn land_merged_prs(all: bool, dry_run: bool) -> Result<(), Box<dyn std
     
     // Get all PR metadata
     let pr_statuses = metadata::get_all_pr_status()
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     if pr_statuses.is_empty() {
         println!("No stacked PRs found.");
@@ -508,7 +508,7 @@ async fn cleanup_merged_pr(
     _pr_number: u64
 ) -> Result<(), Box<dyn std::error::Error>> {
     let repo = Repository::open(".")
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        .map_err(|e| e)?;
     
     // Delete the local branch if it exists (for backward compatibility with old workflow)
     match repo.find_branch(&pr_info.branch_name, BranchType::Local) {
@@ -535,12 +535,12 @@ async fn cleanup_merged_pr(
     // Update metadata to mark as merged
     let commit_oid = Oid::from_str(&pr_info.commit_id)?;
     if let Some(mut metadata) = metadata::get_commit_metadata(&commit_oid)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)? 
+        .map_err(|e| e)? 
     {
         metadata.status = metadata::PRStatus::PRMerged;
         
         metadata::update_commit_metadata(&commit_oid, &metadata)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            .map_err(|e| e)?;
     }
     
     Ok(())
@@ -665,6 +665,111 @@ mod tests {
         // Try to switch to a branch that doesn't exist
         let result = switch_branch("nonexistent-branch");
         assert!(result.is_err());
+        
+        // Restore original directory
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_commits_needing_processing_latest_only() {
+        let (repo, temp_dir) = create_test_repo().expect("Failed to create test repo");
+        
+        // Change to the test repo directory
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+        
+        // Add multiple commits
+        let signature = repo.signature().unwrap();
+        for i in 1..=3 {
+            let content = format!("Feature {}", i);
+            let test_file_path = temp_dir.path().join("features.txt");
+            let existing = std::fs::read_to_string(&test_file_path).unwrap_or_default();
+            std::fs::write(&test_file_path, format!("{}{}\n", existing, content)).unwrap();
+            
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("features.txt")).unwrap();
+            index.write().unwrap();
+            
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            
+            repo.commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                &format!("Add feature {}", i),
+                &tree,
+                &[&parent],
+            ).unwrap();
+        }
+        
+        // Test latest only
+        let updates = get_latest_commit_needing_processing().expect("Failed to get latest commits");
+        assert_eq!(updates.len(), 1);
+        
+        // Test all commits
+        let updates = get_commits_needing_processing().expect("Failed to get all commits");
+        assert!(updates.len() >= 3);
+        
+        // Restore original directory
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_commit_info_creation() {
+        let commit_info = CommitInfo {
+            id: git2::Oid::from_str("1234567890abcdef1234567890abcdef12345678").unwrap(),
+            message: "Add user authentication".to_string(),
+            potential_branch_name: "gitx/test/add-user-authentication".to_string(),
+        };
+        
+        assert_eq!(commit_info.message, "Add user authentication");
+        assert_eq!(commit_info.potential_branch_name, "gitx/test/add-user-authentication");
+    }
+
+    #[test]
+    fn test_create_pr_branch() {
+        let (repo, temp_dir) = create_test_repo().expect("Failed to create test repo");
+        
+        // Change to the test repo directory
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+        
+        // Get the HEAD commit
+        let head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        
+        let commit_info = CommitInfo {
+            id: commit.id(),
+            message: "Add new feature".to_string(),
+            potential_branch_name: "gitx/test/add-new-feature".to_string(),
+        };
+        
+        // Create PR branch
+        create_pr_branch(&commit_info).expect("Failed to create PR branch");
+        
+        // Verify branch was created
+        let branches = get_all_branches().expect("Failed to get branches");
+        assert!(branches.contains(&"gitx/test/add-new-feature".to_string()));
+        
+        // Verify metadata was stored
+        assert!(crate::metadata::has_pr_metadata(&commit.id()));
+        
+        // Restore original directory
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_git_username() {
+        let (_repo, temp_dir) = create_test_repo().expect("Failed to create test repo");
+        
+        // Change to the test repo directory
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+        
+        let username = get_git_username().expect("Failed to get git username");
+        assert_eq!(username, "Test User");
         
         // Restore original directory
         std::env::set_current_dir(original_dir).unwrap();

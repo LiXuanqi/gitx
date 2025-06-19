@@ -270,9 +270,49 @@ mod tests {
     }
 
     #[test]
+    fn test_github_repo_creation() {
+        let repo = GitHubRepo {
+            owner: "testowner".to_string(),
+            name: "testrepo".to_string(),
+        };
+        
+        assert_eq!(repo.owner, "testowner");
+        assert_eq!(repo.name, "testrepo");
+    }
+
+    #[test]
+    fn test_pr_info_creation() {
+        let pr_info = PRInfo {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+            title: "Add new feature".to_string(),
+        };
+        
+        assert_eq!(pr_info.number, 42);
+        assert_eq!(pr_info.url, "https://github.com/owner/repo/pull/42");
+        assert_eq!(pr_info.title, "Add new feature");
+    }
+
+    #[test]
+    fn test_github_pr_status_creation() {
+        let status = GitHubPRStatus {
+            number: 123,
+            state: "open".to_string(),
+            title: "Fix bug".to_string(),
+            url: "https://github.com/owner/repo/pull/123".to_string(),
+            mergeable: Some(true),
+            draft: false,
+        };
+        
+        assert_eq!(status.number, 123);
+        assert_eq!(status.state, "open");
+        assert!(!status.draft);
+        assert_eq!(status.mergeable, Some(true));
+    }
+
+    #[test]
     fn test_pr_body_generation() {
         use crate::metadata::{CommitMetadata, IncrementalCommitType};
-        use chrono::Utc;
         
         let metadata = CommitMetadata::new_branch_created(
             "gitx/test/feature".to_string(),
@@ -283,7 +323,7 @@ mod tests {
             IncrementalCommitType::AmendedCommit
         );
         
-        let commit_message = "Add new feature\n\nThis adds a really cool feature\nthat does amazing things.";
+        let _commit_message = "Add new feature\n\nThis adds a really cool feature\nthat does amazing things.";
         
         // This test would need to be updated to work with the actual GitHubClient
         // For now, just verify the structure compiles

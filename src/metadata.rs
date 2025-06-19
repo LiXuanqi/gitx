@@ -2,38 +2,16 @@ use git2::{Repository, Oid};
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
-/// Metadata stored for each commit that has a PR branch
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CommitMetadata {
-    pub pr_branch_name: String,
-    pub github_pr_number: Option<u64>,
-    pub status: PRStatus,
-    pub created_at: DateTime<Utc>,
-    pub last_updated: DateTime<Utc>,
-    #[serde(default)]
-    pub original_commit_id: String,
-    #[serde(default)]
-    pub incremental_commits: Vec<IncrementalCommit>,
-}
-
-/// Information about an incremental commit added to a PR branch
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct IncrementalCommit {
-    pub commit_id: String,
-    pub message: String,
-    pub created_at: DateTime<Utc>,
-    pub commit_type: IncrementalCommitType,
-}
-
+/// Type of incremental commit
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum IncrementalCommitType {
-    /// Original commit was amended
+    /// Original commit was amended (git commit --amend)
     AmendedCommit,
     /// New commit added to this feature
     AdditionalCommit,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum PRStatus {
     BranchCreated,
     PRCreated,
@@ -43,6 +21,29 @@ pub enum PRStatus {
 
 /// Git notes namespace for storing gitx metadata
 const GITX_NOTES_REF: &str = "refs/notes/gitx-metadata";
+
+/// Metadata about a commit and its associated PR
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CommitMetadata {
+    pub pr_branch_name: String,
+    #[serde(default)]
+    pub github_pr_number: Option<u64>,
+    pub status: PRStatus,
+    pub created_at: DateTime<Utc>,
+    pub last_updated: DateTime<Utc>,
+    pub original_commit_id: String,
+    #[serde(default)]
+    pub incremental_commits: Vec<IncrementalCommit>,
+}
+
+/// Information about an incremental commit
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IncrementalCommit {
+    pub commit_id: String,
+    pub message: String,
+    pub commit_type: IncrementalCommitType,
+    pub created_at: DateTime<Utc>,
+}
 
 impl CommitMetadata {
     /// Create new metadata for a branch that was just created
@@ -67,6 +68,20 @@ impl CommitMetadata {
         self
     }
     
+    /// Add an incremental commit
+    pub fn add_incremental_commit(mut self, commit_id: String, message: String, commit_type: IncrementalCommitType) -> Self {
+        let incremental_commit = IncrementalCommit {
+            commit_id,
+            message,
+            commit_type,
+            created_at: Utc::now(),
+        };
+        
+        self.incremental_commits.push(incremental_commit);
+        self.last_updated = Utc::now();
+        self
+    }
+    
     /// Mark as merged
     #[allow(dead_code)]
     pub fn mark_merged(mut self) -> Self {
@@ -75,109 +90,127 @@ impl CommitMetadata {
         self
     }
     
-    /// Add an incremental commit to this PR
-    pub fn add_incremental_commit(mut self, commit_id: String, message: String, commit_type: IncrementalCommitType) -> Self {
-        let incremental_commit = IncrementalCommit {
-            commit_id,
-            message,
-            created_at: Utc::now(),
-            commit_type,
-        };
-        
-        self.incremental_commits.push(incremental_commit);
-        self.last_updated = Utc::now();
-        self
-    }
-    
-    /// Check if the original commit has been changed (amended)
+    /// Check if the current commit ID differs from the original stored commit ID
     pub fn is_commit_changed(&self, current_commit_id: &str) -> bool {
-        // If original_commit_id is empty (backward compatibility), assume no change
-        if self.original_commit_id.is_empty() {
-            false
-        } else {
-            self.original_commit_id != current_commit_id
-        }
+        self.original_commit_id != current_commit_id
     }
 }
 
-/// Store commit metadata in git notes
-pub fn store_commit_metadata(commit_id: &Oid, metadata: &CommitMetadata) -> Result<(), git2::Error> {
+/// Store metadata for a commit using git notes
+pub fn store_commit_metadata(commit_id: &Oid, metadata: &CommitMetadata) -> Result<(), Box<dyn std::error::Error>> {
     let repo = Repository::open(".")?;
-    
-    // Serialize metadata to JSON
-    let json_data = serde_json::to_string_pretty(metadata)
-        .map_err(|e| git2::Error::from_str(&format!("Failed to serialize metadata: {}", e)))?;
-    
-    // Get or create the notes reference
     let signature = repo.signature()?;
     
-    // Write the note
-    repo.note(&signature, &signature, Some(GITX_NOTES_REF), *commit_id, &json_data, false)?;
+    let json = serde_json::to_string_pretty(metadata)?;
+    
+    // Store as a git note
+    repo.note(&signature, &signature, Some(GITX_NOTES_REF), *commit_id, &json, false)?;
     
     Ok(())
 }
 
-/// Retrieve commit metadata from git notes
-pub fn get_commit_metadata(commit_id: &Oid) -> Result<Option<CommitMetadata>, git2::Error> {
+/// Update existing metadata for a commit
+pub fn update_commit_metadata(commit_id: &Oid, metadata: &CommitMetadata) -> Result<(), Box<dyn std::error::Error>> {
+    let repo = Repository::open(".")?;
+    let signature = repo.signature()?;
+    
+    let json = serde_json::to_string_pretty(metadata)?;
+    
+    // Update the git note (force overwrite)
+    repo.note(&signature, &signature, Some(GITX_NOTES_REF), *commit_id, &json, true)?;
+    
+    Ok(())
+}
+
+/// Get metadata for a commit
+pub fn get_commit_metadata(commit_id: &Oid) -> Result<Option<CommitMetadata>, Box<dyn std::error::Error>> {
     let repo = Repository::open(".")?;
     
-    // Try to get the note
     match repo.find_note(Some(GITX_NOTES_REF), *commit_id) {
         Ok(note) => {
-            let note_content = note.message().unwrap_or("");
-            
-            // Deserialize JSON
-            match serde_json::from_str::<CommitMetadata>(note_content) {
-                Ok(metadata) => Ok(Some(metadata)),
-                Err(e) => {
-                    eprintln!("Warning: Failed to parse metadata for commit {}: {}", commit_id, e);
-                    Ok(None)
-                }
+            if let Some(content) = note.message() {
+                let metadata: CommitMetadata = serde_json::from_str(content)?;
+                Ok(Some(metadata))
+            } else {
+                Ok(None)
             }
         }
         Err(_) => Ok(None), // Note doesn't exist
     }
 }
 
-/// Update existing commit metadata
-pub fn update_commit_metadata(commit_id: &Oid, metadata: &CommitMetadata) -> Result<(), git2::Error> {
-    let repo = Repository::open(".")?;
-    
-    // Serialize metadata to JSON
-    let json_data = serde_json::to_string_pretty(metadata)
-        .map_err(|e| git2::Error::from_str(&format!("Failed to serialize metadata: {}", e)))?;
-    
-    // Get signature
-    let signature = repo.signature()?;
-    
-    // Update the note (force=true to overwrite)
-    repo.note(&signature, &signature, Some(GITX_NOTES_REF), *commit_id, &json_data, true)?;
-    
-    Ok(())
+/// Check if a commit has PR metadata
+pub fn has_pr_metadata(commit_id: &Oid) -> bool {
+    match get_commit_metadata(commit_id) {
+        Ok(Some(_)) => true,
+        _ => false,
+    }
 }
 
-/// List all commits that have PR metadata
-pub fn list_all_pr_commits() -> Result<Vec<(Oid, CommitMetadata)>, git2::Error> {
+/// Information needed to display PR status
+#[derive(Debug, Clone)]
+pub struct PRStatusInfo {
+    pub commit_id: String,
+    pub commit_message: String,
+    pub branch_name: String,
+    pub pr_number: Option<u64>,
+    pub status: PRStatus,
+    pub created_at: DateTime<Utc>,
+    pub last_updated: DateTime<Utc>,
+    pub incremental_count: usize,
+    pub latest_incremental: Option<IncrementalCommit>,
+}
+
+impl PRStatusInfo {
+    /// Create from commit metadata and message
+    pub fn from_commit_and_metadata(commit_id: String, commit_message: String, metadata: &CommitMetadata) -> Self {
+        let latest_incremental = metadata.incremental_commits.last().cloned();
+        
+        Self {
+            commit_id,
+            commit_message,
+            branch_name: metadata.pr_branch_name.clone(),
+            pr_number: metadata.github_pr_number,
+            status: metadata.status.clone(),
+            created_at: metadata.created_at,
+            last_updated: metadata.last_updated,
+            incremental_count: metadata.incremental_commits.len(),
+            latest_incremental,
+        }
+    }
+}
+
+/// Get status information for all PRs
+pub fn get_all_pr_status() -> Result<Vec<PRStatusInfo>, Box<dyn std::error::Error>> {
     let repo = Repository::open(".")?;
     let mut results = Vec::new();
     
-    // Try to get notes iterator
     match repo.notes(Some(GITX_NOTES_REF)) {
         Ok(notes) => {
-            // Iterate through all notes
-            for note_result in notes {
-                let (_note_oid, annotated_oid) = note_result?;
-                
-                // Get the note content
-                if let Ok(note) = repo.find_note(Some(GITX_NOTES_REF), annotated_oid) {
-                    if let Some(content) = note.message() {
-                        // Try to deserialize
-                        if let Ok(metadata) = serde_json::from_str::<CommitMetadata>(content) {
-                            results.push((annotated_oid, metadata));
+            notes.for_each(|_note_id, commit_id| {
+                match repo.find_note(Some(GITX_NOTES_REF), *commit_id) {
+                    Ok(note) => {
+                        if let Some(content) = note.message() {
+                            if let Ok(metadata) = serde_json::from_str::<CommitMetadata>(content) {
+                                // Get the commit message
+                                if let Ok(commit) = repo.find_commit(*commit_id) {
+                                    let commit_message = commit.message().unwrap_or("").to_string();
+                                    
+                                    let pr_status = PRStatusInfo::from_commit_and_metadata(
+                                        commit_id.to_string(),
+                                        commit_message,
+                                        &metadata
+                                    );
+                                    
+                                    results.push(pr_status);
+                                }
+                            }
                         }
                     }
+                    Err(_) => {}
                 }
-            }
+                true // Continue iteration
+            })?;
         }
         Err(_) => {
             // Notes reference doesn't exist yet, return empty list
@@ -196,68 +229,48 @@ pub fn remove_commit_metadata(commit_id: &Oid) -> Result<(), git2::Error> {
     Ok(())
 }
 
-/// Check if a commit has PR metadata
-pub fn has_pr_metadata(commit_id: &Oid) -> bool {
-    get_commit_metadata(commit_id).unwrap_or(None).is_some()
-}
-
-/// Information about a PR for status display
-#[derive(Debug, Clone)]
-pub struct PRStatusInfo {
-    pub commit_id: String,
-    pub commit_message: String,
-    pub branch_name: String,
-    pub pr_number: Option<u64>,
-    pub status: PRStatus,
-    pub created_at: DateTime<Utc>,
-    pub last_updated: DateTime<Utc>,
-    pub incremental_count: usize,
-    pub latest_incremental: Option<IncrementalCommit>,
-}
-
-/// Get all PRs for status display
-pub fn get_all_pr_status() -> Result<Vec<PRStatusInfo>, git2::Error> {
+/// List all commits that have PR metadata
+#[allow(dead_code)]
+pub fn list_all_pr_commits() -> Result<Vec<(Oid, CommitMetadata)>, git2::Error> {
     let repo = Repository::open(".")?;
-    let all_pr_commits = list_all_pr_commits()?;
-    let mut status_infos = Vec::new();
+    let mut results = Vec::new();
     
-    for (commit_oid, metadata) in all_pr_commits {
-        // Get commit information
-        if let Ok(commit) = repo.find_commit(commit_oid) {
-            let commit_message = commit.message().unwrap_or("").to_string();
-            let latest_incremental = metadata.incremental_commits.last().cloned();
-            
-            status_infos.push(PRStatusInfo {
-                commit_id: commit_oid.to_string(),
-                commit_message,
-                branch_name: metadata.pr_branch_name.clone(),
-                pr_number: metadata.github_pr_number,
-                status: metadata.status.clone(),
-                created_at: metadata.created_at,
-                last_updated: metadata.last_updated,
-                incremental_count: metadata.incremental_commits.len(),
-                latest_incremental,
-            });
+    match repo.notes(Some(GITX_NOTES_REF)) {
+        Ok(notes) => {
+            notes.for_each(|_note_id, commit_id| {
+                match repo.find_note(Some(GITX_NOTES_REF), *commit_id) {
+                    Ok(note) => {
+                        if let Some(content) = note.message() {
+                            if let Ok(metadata) = serde_json::from_str::<CommitMetadata>(content) {
+                                results.push((*commit_id, metadata));
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+                true // Continue iteration
+            }).map_err(|e| git2::Error::from(e))?;
+        }
+        Err(_) => {
+            // Notes reference doesn't exist yet, return empty list
         }
     }
     
-    // Sort by creation time (newest first)
-    status_infos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    
-    Ok(status_infos)
+    Ok(results)
 }
 
 /// Check if a commit at the current position differs from its stored metadata
 /// Returns (has_metadata, needs_incremental_update)
 #[allow(dead_code)]
 pub fn check_commit_for_updates(current_oid: &Oid) -> Result<(bool, bool), git2::Error> {
-    match get_commit_metadata(current_oid)? {
-        Some(metadata) => {
+    match get_commit_metadata(current_oid) {
+        Ok(Some(metadata)) => {
             let current_commit_id = current_oid.to_string();
             let needs_update = metadata.is_commit_changed(&current_commit_id);
             Ok((true, needs_update))
         }
-        None => Ok((false, false)),
+        Ok(None) => Ok((false, false)),
+        Err(_) => Ok((false, false)),
     }
 }
 
@@ -269,15 +282,12 @@ pub fn find_commits_needing_updates() -> Result<Vec<(Oid, CommitMetadata)>, git2
     
     let repo = Repository::open(".")?;
     
-    for (stored_oid, metadata) in all_pr_commits {
-        // Try to find the commit at the stored position
-        if let Ok(_stored_commit) = repo.find_commit(stored_oid) {
-            let current_commit_id = stored_oid.to_string();
-            
-            // Check if the commit content has changed (this would happen if rebased/amended)
-            if metadata.is_commit_changed(&current_commit_id) {
-                needs_updates.push((stored_oid, metadata));
-            }
+    for (commit_oid, metadata) in all_pr_commits {
+        let current_commit = repo.find_commit(commit_oid)?;
+        let current_commit_id = current_commit.id().to_string();
+        
+        if metadata.is_commit_changed(&current_commit_id) {
+            needs_updates.push((commit_oid, metadata));
         }
     }
     
@@ -287,17 +297,41 @@ pub fn find_commits_needing_updates() -> Result<Vec<(Oid, CommitMetadata)>, git2
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use tempfile;
+    use tempfile::TempDir;
+    use git2::{Repository, Signature};
+    use std::fs;
+    use std::path::Path;
 
-    fn create_test_repo() -> Result<(Repository, tempfile::TempDir), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::tempdir()?;
+    fn create_test_repo() -> Result<(Repository, TempDir), git2::Error> {
+        let temp_dir = tempfile::tempdir().unwrap();
         let repo = Repository::init(&temp_dir)?;
         
         // Configure user for commits
         let mut config = repo.config()?;
-        config.set_str("user.name", "Test User")?;
-        config.set_str("user.email", "test@example.com")?;
+        config.set_str("user.name", "Test User").unwrap();
+        config.set_str("user.email", "test@example.com").unwrap();
+        
+        // Create initial commit
+        let signature = Signature::now("Test User", "test@example.com")?;
+        let tree_id = {
+            let mut index = repo.index()?;
+            // Create a test file
+            let test_file_path = temp_dir.path().join("test.txt");
+            fs::write(&test_file_path, "test content").unwrap();
+            index.add_path(Path::new("test.txt"))?;
+            index.write()?;
+            index.write_tree()?
+        };
+        let tree = repo.find_tree(tree_id)?;
+        let _commit_id = repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "Initial commit",
+            &tree,
+            &[],
+        )?;
+        drop(tree); // Explicitly drop to release the borrow
         
         Ok((repo, temp_dir))
     }
@@ -306,68 +340,144 @@ mod tests {
     fn test_commit_metadata_creation() {
         let metadata = CommitMetadata::new_branch_created(
             "gitx/test/feature".to_string(),
-            "1234567890abcdef".to_string()
+            "abc123".to_string()
         );
         
         assert_eq!(metadata.pr_branch_name, "gitx/test/feature");
-        assert_eq!(metadata.original_commit_id, "1234567890abcdef");
-        assert!(metadata.github_pr_number.is_none());
-        assert!(matches!(metadata.status, PRStatus::BranchCreated));
+        assert_eq!(metadata.original_commit_id, "abc123");
+        assert_eq!(metadata.status, PRStatus::BranchCreated);
         assert!(metadata.incremental_commits.is_empty());
+        assert_eq!(metadata.incremental_commits.len(), 0);
+        assert!(metadata.github_pr_number.is_none());
     }
 
     #[test]
-    fn test_metadata_with_pr_number() {
+    fn test_commit_metadata_with_pr_number() {
         let metadata = CommitMetadata::new_branch_created(
             "gitx/test/feature".to_string(),
-            "1234567890abcdef".to_string()
-        ).with_pr_number(123);
+            "abc123".to_string()
+        ).with_pr_number(42);
         
-        assert_eq!(metadata.github_pr_number, Some(123));
-        assert!(matches!(metadata.status, PRStatus::PRCreated));
+        assert_eq!(metadata.github_pr_number, Some(42));
+        assert_eq!(metadata.status, PRStatus::PRCreated);
     }
 
     #[test]
-    fn test_incremental_commit_handling() {
+    fn test_add_incremental_commit() {
         let metadata = CommitMetadata::new_branch_created(
             "gitx/test/feature".to_string(),
-            "1234567890abcdef".to_string()
+            "abc123".to_string()
         ).add_incremental_commit(
-            "abcdef1234567890".to_string(),
-            "Updated feature implementation".to_string(),
+            "def456".to_string(),
+            "Fix issue with tests".to_string(),
             IncrementalCommitType::AmendedCommit
         );
         
         assert_eq!(metadata.incremental_commits.len(), 1);
-        assert_eq!(metadata.incremental_commits[0].commit_id, "abcdef1234567890");
-        assert_eq!(metadata.incremental_commits[0].message, "Updated feature implementation");
-        assert!(matches!(metadata.incremental_commits[0].commit_type, IncrementalCommitType::AmendedCommit));
+        
+        let inc_commit = &metadata.incremental_commits[0];
+        assert_eq!(inc_commit.commit_id, "def456");
+        assert_eq!(inc_commit.message, "Fix issue with tests");
+        assert!(matches!(inc_commit.commit_type, IncrementalCommitType::AmendedCommit));
+        
+        // Verify the incremental commit was added
+        let latest = &metadata.incremental_commits[0];
+        assert_eq!(latest.commit_id, "def456");
     }
 
     #[test]
-    fn test_commit_change_detection() {
+    fn test_commit_changed_detection() {
         let metadata = CommitMetadata::new_branch_created(
             "gitx/test/feature".to_string(),
-            "1234567890abcdef".to_string()
+            "abc123".to_string()
         );
         
-        assert!(!metadata.is_commit_changed("1234567890abcdef"));
-        assert!(metadata.is_commit_changed("abcdef1234567890"));
+        // Same commit ID should not be changed
+        assert!(!metadata.is_commit_changed("abc123"));
+        
+        // Different commit ID should be changed
+        assert!(metadata.is_commit_changed("def456"));
     }
 
     #[test]
-    fn test_has_pr_metadata_false_for_nonexistent() {
-        let (_repo, temp_dir) = create_test_repo().expect("Failed to create test repo");
+    fn test_metadata_serialization() {
+        let metadata = CommitMetadata::new_branch_created(
+            "gitx/test/feature".to_string(),
+            "abc123".to_string()
+        ).with_pr_number(42)
+        .add_incremental_commit(
+            "def456".to_string(),
+            "Update feature".to_string(),
+            IncrementalCommitType::AdditionalCommit
+        );
         
-        // Change to test repo directory
-        let original_dir = env::current_dir().unwrap();
-        env::set_current_dir(temp_dir.path()).unwrap();
+        // Serialize to JSON
+        let json = serde_json::to_string(&metadata).expect("Failed to serialize");
         
-        // Test with a random OID
-        let test_oid = Oid::from_str("1234567890123456789012345678901234567890").unwrap();
-        assert!(!has_pr_metadata(&test_oid));
+        // Deserialize back
+        let deserialized: CommitMetadata = serde_json::from_str(&json).expect("Failed to deserialize");
         
-        // Restore directory
-        env::set_current_dir(original_dir).unwrap();
+        assert_eq!(deserialized.pr_branch_name, metadata.pr_branch_name);
+        assert_eq!(deserialized.original_commit_id, metadata.original_commit_id);
+        assert_eq!(deserialized.github_pr_number, metadata.github_pr_number);
+        assert_eq!(deserialized.incremental_commits.len(), metadata.incremental_commits.len());
+        assert_eq!(deserialized.incremental_commits.len(), metadata.incremental_commits.len());
+    }
+
+    #[test]
+    fn test_store_and_retrieve_metadata() {
+        let (repo, _temp_dir) = create_test_repo().expect("Failed to create test repo");
+        
+        // Change working directory to the test repo
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(_temp_dir.path()).unwrap();
+        
+        // Get the HEAD commit
+        let head = repo.head().unwrap();
+        let commit = head.peel_to_commit().unwrap();
+        let commit_id = commit.id();
+        
+        // Create metadata
+        let metadata = CommitMetadata::new_branch_created(
+            "gitx/test/feature".to_string(),
+            commit_id.to_string()
+        );
+        
+        // Store metadata
+        store_commit_metadata(&commit_id, &metadata).expect("Failed to store metadata");
+        
+        // Retrieve metadata
+        let retrieved = get_commit_metadata(&commit_id).expect("Failed to get metadata");
+        assert!(retrieved.is_some());
+        
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.pr_branch_name, "gitx/test/feature");
+        assert_eq!(retrieved.original_commit_id, commit_id.to_string());
+        
+        // Test has_pr_metadata
+        assert!(has_pr_metadata(&commit_id));
+        
+        // Restore original directory
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_backward_compatibility() {
+        // Test that old metadata format (without new fields) can still be deserialized
+        let old_format_json = r#"{
+            "pr_branch_name": "gitx/test/old-feature",
+            "original_commit_id": "old123",
+            "status": "BranchCreated",
+            "created_at": "2023-01-01T00:00:00Z",
+            "last_updated": "2023-01-01T00:00:00Z",
+            "incremental_commits": []
+        }"#;
+        
+        let metadata: CommitMetadata = serde_json::from_str(old_format_json)
+            .expect("Failed to deserialize old format");
+        
+        // New fields should have default values
+        assert_eq!(metadata.incremental_commits.len(), 0);
+        assert!(metadata.github_pr_number.is_none());
     }
 }
