@@ -199,6 +199,52 @@ pub fn has_pr_metadata(commit_id: &Oid) -> bool {
     get_commit_metadata(commit_id).unwrap_or(None).is_some()
 }
 
+/// Information about a PR for status display
+#[derive(Debug, Clone)]
+pub struct PRStatusInfo {
+    pub commit_id: String,
+    pub commit_message: String,
+    pub branch_name: String,
+    pub pr_number: Option<u64>,
+    pub status: PRStatus,
+    pub created_at: DateTime<Utc>,
+    pub last_updated: DateTime<Utc>,
+    pub incremental_count: usize,
+    pub latest_incremental: Option<IncrementalCommit>,
+}
+
+/// Get all PRs for status display
+pub fn get_all_pr_status() -> Result<Vec<PRStatusInfo>, git2::Error> {
+    let repo = Repository::open(".")?;
+    let all_pr_commits = list_all_pr_commits()?;
+    let mut status_infos = Vec::new();
+    
+    for (commit_oid, metadata) in all_pr_commits {
+        // Get commit information
+        if let Ok(commit) = repo.find_commit(commit_oid) {
+            let commit_message = commit.message().unwrap_or("").to_string();
+            let latest_incremental = metadata.incremental_commits.last().cloned();
+            
+            status_infos.push(PRStatusInfo {
+                commit_id: commit_oid.to_string(),
+                commit_message,
+                branch_name: metadata.pr_branch_name.clone(),
+                pr_number: metadata.github_pr_number,
+                status: metadata.status.clone(),
+                created_at: metadata.created_at,
+                last_updated: metadata.last_updated,
+                incremental_count: metadata.incremental_commits.len(),
+                latest_incremental,
+            });
+        }
+    }
+    
+    // Sort by creation time (newest first)
+    status_infos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    
+    Ok(status_infos)
+}
+
 /// Check if a commit at the current position differs from its stored metadata
 /// Returns (has_metadata, needs_incremental_update)
 pub fn check_commit_for_updates(current_oid: &Oid) -> Result<(bool, bool), git2::Error> {

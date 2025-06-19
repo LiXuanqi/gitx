@@ -329,6 +329,167 @@ pub async fn create_incremental_commit_with_github(
     Ok(())
 }
 
+/// Land (cleanup) merged PRs by detecting merged status from GitHub and cleaning up local branches
+pub async fn land_merged_prs(all: bool, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if GitHub token is available
+    if !github::check_github_token() {
+        return Err("GITHUB_TOKEN environment variable not set. Required to check PR merge status.".into());
+    }
+    
+    // Get all PR metadata
+    let pr_statuses = metadata::get_all_pr_status()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    if pr_statuses.is_empty() {
+        println!("No stacked PRs found.");
+        return Ok(());
+    }
+    
+    println!("🔍 Checking PR statuses...");
+    
+    // Get GitHub client
+    let github_client = github::GitHubClient::new().await?;
+    
+    // Find PRs that have GitHub PR numbers
+    let prs_to_check: Vec<_> = pr_statuses.iter()
+        .filter_map(|pr| pr.pr_number.map(|num| (num, pr)))
+        .collect();
+    
+    if prs_to_check.is_empty() {
+        println!("No PRs with GitHub PR numbers found.");
+        return Ok(());
+    }
+    
+    let pr_numbers: Vec<u64> = prs_to_check.iter().map(|(num, _)| *num).collect();
+    let github_statuses = github_client.get_multiple_pr_statuses(&pr_numbers).await?;
+    
+    // Find merged PRs
+    let mut merged_prs = Vec::new();
+    for status in &github_statuses {
+        if status.state == "merged" {
+            if let Some((_, pr_info)) = prs_to_check.iter().find(|(num, _)| *num == status.number) {
+                merged_prs.push((status, *pr_info));
+            }
+        }
+    }
+    
+    if merged_prs.is_empty() {
+        println!("No merged PRs found ready for cleanup.");
+        if !all {
+            println!("Use --all to force cleanup of all tracked PRs (requires confirmation).");
+        }
+        return Ok(());
+    }
+    
+    println!("Found {} merged PR{} ready for cleanup:", 
+        merged_prs.len(), 
+        if merged_prs.len() == 1 { "" } else { "s" }
+    );
+    
+    for (github_status, _pr_info) in &merged_prs {
+        println!("  ✅ PR #{}: {} (merged)", github_status.number, github_status.title);
+    }
+    
+    if dry_run {
+        println!("\n🧪 DRY RUN - would perform these actions:");
+        println!("🧹 Cleaning up merged PRs:");
+        
+        for (_, pr_info) in &merged_prs {
+            println!("  🗑️  Would delete branch: {}", pr_info.branch_name);
+            println!("  📝 Would update metadata: mark PR as merged");
+        }
+        
+        println!("  🔄 Would sync with origin/main");
+        println!("\nTo actually perform cleanup, run without --dry-run");
+        return Ok(());
+    }
+    
+    // Perform actual cleanup
+    println!("\n🧹 Cleaning up merged PRs:");
+    let mut cleaned_up = 0;
+    
+    for (github_status, pr_info) in &merged_prs {
+        match cleanup_merged_pr(pr_info, github_status.number).await {
+            Ok(()) => {
+                println!("  🗑️  Deleted branch: {}", pr_info.branch_name);
+                println!("  📝 Updated metadata: marked PR #{} as merged", github_status.number);
+                cleaned_up += 1;
+            }
+            Err(e) => {
+                eprintln!("  ❌ Failed to cleanup PR #{}: {}", github_status.number, e);
+            }
+        }
+    }
+    
+    // Sync with origin/main
+    if cleaned_up > 0 {
+        match sync_with_origin_main().await {
+            Ok(()) => {
+                println!("  🔄 Synced with origin/main");
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  Warning: Failed to sync with origin/main: {}", e);
+            }
+        }
+    }
+    
+    println!("\n✨ Cleanup complete! {} PR{} cleaned up.", 
+        cleaned_up, 
+        if cleaned_up == 1 { "" } else { "s" }
+    );
+    
+    Ok(())
+}
+
+/// Clean up a single merged PR: delete local branch and update metadata
+async fn cleanup_merged_pr(
+    pr_info: &metadata::PRStatusInfo, 
+    _pr_number: u64
+) -> Result<(), Box<dyn std::error::Error>> {
+    let repo = Repository::open(".")
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    // Delete the local branch if it exists
+    match repo.find_branch(&pr_info.branch_name, BranchType::Local) {
+        Ok(mut branch) => {
+            branch.delete()?;
+        }
+        Err(e) if e.code() == git2::ErrorCode::NotFound => {
+            // Branch doesn't exist locally, that's fine
+        }
+        Err(e) => return Err(Box::new(e) as Box<dyn std::error::Error>),
+    }
+    
+    // Update metadata to mark as merged
+    let commit_oid = Oid::from_str(&pr_info.commit_id)?;
+    if let Some(mut metadata) = metadata::get_commit_metadata(&commit_oid)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)? 
+    {
+        metadata.status = metadata::PRStatus::PRMerged;
+        
+        metadata::update_commit_metadata(&commit_oid, &metadata)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    }
+    
+    Ok(())
+}
+
+/// Sync local main branch with origin/main
+async fn sync_with_origin_main() -> Result<(), Box<dyn std::error::Error>> {
+    // Use git command to pull latest changes
+    let output = tokio::process::Command::new("git")
+        .args(&["pull", "origin", "main"])
+        .output()
+        .await?;
+    
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to sync with origin/main: {}", error).into());
+    }
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

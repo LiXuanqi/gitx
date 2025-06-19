@@ -198,6 +198,55 @@ pub fn check_github_token() -> bool {
     env::var("GITHUB_TOKEN").is_ok()
 }
 
+/// GitHub PR status information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubPRStatus {
+    pub number: u64,
+    pub state: String,       // "open", "closed", "merged"
+    pub title: String,
+    pub url: String,
+    pub mergeable: Option<bool>,
+    pub draft: bool,
+}
+
+impl GitHubClient {
+    /// Get PR status from GitHub
+    pub async fn get_pr_status(&self, pr_number: u64) -> Result<GitHubPRStatus, Box<dyn std::error::Error>> {
+        let pr = self
+            .octocrab
+            .pulls(&self.repo.owner, &self.repo.name)
+            .get(pr_number)
+            .await?;
+        
+        Ok(GitHubPRStatus {
+            number: pr.number,
+            state: pr.state.map(|s| format!("{:?}", s).to_lowercase()).unwrap_or_default(),
+            title: pr.title.unwrap_or_default(),
+            url: pr.html_url.map(|u| u.to_string()).unwrap_or_default(),
+            mergeable: pr.mergeable,
+            draft: pr.draft.unwrap_or(false),
+        })
+    }
+
+    /// Get multiple PR statuses efficiently
+    pub async fn get_multiple_pr_statuses(&self, pr_numbers: &[u64]) -> Result<Vec<GitHubPRStatus>, Box<dyn std::error::Error>> {
+        let mut statuses = Vec::new();
+        
+        // Note: In a production system, you'd want to batch these requests
+        // For now, we'll do them sequentially to avoid rate limiting
+        for &pr_number in pr_numbers {
+            match self.get_pr_status(pr_number).await {
+                Ok(status) => statuses.push(status),
+                Err(e) => {
+                    eprintln!("Warning: Failed to get status for PR #{}: {}", pr_number, e);
+                }
+            }
+        }
+        
+        Ok(statuses)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -5,6 +5,7 @@ mod git_ops;
 mod branch_naming;
 mod metadata;
 mod github;
+mod status_display;
 
 #[derive(Parser)]
 #[command(name = "gitx")]
@@ -23,6 +24,17 @@ enum Commands {
         /// Also create/update GitHub PRs
         #[arg(long)]
         github: bool,
+    },
+    /// Show status of current stacked PRs
+    Status,
+    /// Clean up merged PRs and sync with remote
+    Land {
+        /// Clean up all merged PRs
+        #[arg(long)]
+        all: bool,
+        /// Show what would be cleaned up without making changes
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -133,6 +145,26 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error analyzing commits: {}", e);
+                }
+            }
+        }
+        Commands::Status => {
+            match status_display::display_status().await {
+                Ok(()) => {
+                    // Status displayed successfully
+                }
+                Err(e) => {
+                    eprintln!("Error displaying status: {}", e);
+                }
+            }
+        }
+        Commands::Land { all, dry_run } => {
+            match git_ops::land_merged_prs(*all, *dry_run).await {
+                Ok(()) => {
+                    // Landing completed successfully
+                }
+                Err(e) => {
+                    eprintln!("Error during land operation: {}", e);
                 }
             }
         }
