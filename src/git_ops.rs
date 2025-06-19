@@ -1,5 +1,6 @@
 use git2::{Repository, BranchType, Oid};
 use crate::branch_naming;
+use crate::metadata;
 
 pub fn get_all_branches() -> Result<Vec<String>, git2::Error> {
     let repo = Repository::open(".")?;
@@ -41,7 +42,7 @@ pub fn get_git_username() -> Result<String, git2::Error> {
     config.get_string("user.name")
 }
 
-/// Get commits on main branch that don't have corresponding PR branches
+/// Get commits on main branch that don't have corresponding PR metadata
 pub fn get_unpushed_commits() -> Result<Vec<CommitInfo>, git2::Error> {
     let repo = Repository::open(".")?;
     let mut commits = Vec::new();
@@ -55,13 +56,6 @@ pub fn get_unpushed_commits() -> Result<Vec<CommitInfo>, git2::Error> {
     let mut revwalk = repo.revwalk()?;
     revwalk.push(main_commit.id())?;
     
-    // Get existing transient branches to avoid duplicates
-    let existing_branches = get_all_branches()?;
-    let transient_branches: Vec<String> = existing_branches
-        .into_iter()
-        .filter(|b| branch_naming::is_transient_pr_branch(b))
-        .collect();
-    
     let username = get_git_username().unwrap_or_else(|_| "unknown".to_string());
     
     for oid in revwalk.take(10) { // Limit to last 10 commits for now
@@ -69,17 +63,19 @@ pub fn get_unpushed_commits() -> Result<Vec<CommitInfo>, git2::Error> {
         let commit = repo.find_commit(oid)?;
         let message = commit.message().unwrap_or("").to_string();
         
+        // Skip if this commit already has PR metadata
+        if metadata::has_pr_metadata(&oid) {
+            continue;
+        }
+        
         // Generate what the branch name would be
         let potential_branch = branch_naming::generate_branch_name(&username, &message);
         
-        // Skip if we already have a branch for this commit
-        if !transient_branches.contains(&potential_branch) {
-            commits.push(CommitInfo {
-                id: oid,
-                message: message.clone(),
-                potential_branch_name: potential_branch,
-            });
-        }
+        commits.push(CommitInfo {
+            id: oid,
+            message: message.clone(),
+            potential_branch_name: potential_branch,
+        });
     }
     
     Ok(commits)
@@ -100,10 +96,30 @@ pub fn create_pr_branch(commit_info: &CommitInfo) -> Result<(), git2::Error> {
     // Get the commit object
     let commit = repo.find_commit(commit_info.id)?;
     
-    // Create the branch at this commit
-    let _branch = repo.branch(&commit_info.potential_branch_name, &commit, false)?;
+    // Try to create the branch at this commit
+    let branch_created = match repo.branch(&commit_info.potential_branch_name, &commit, false) {
+        Ok(_) => {
+            println!("Created branch: {}", commit_info.potential_branch_name);
+            true
+        }
+        Err(e) if e.code() == git2::ErrorCode::Exists => {
+            println!("Branch already exists: {}", commit_info.potential_branch_name);
+            true // Branch exists, that's still success for our purposes
+        }
+        Err(e) => return Err(e), // Real error, propagate it
+    };
     
-    println!("Created branch: {}", commit_info.potential_branch_name);
+    if branch_created {
+        // Store metadata for this commit (only if we don't already have it)
+        if !metadata::has_pr_metadata(&commit_info.id) {
+            let commit_metadata = metadata::CommitMetadata::new_branch_created(
+                commit_info.potential_branch_name.clone()
+            );
+            
+            metadata::store_commit_metadata(&commit_info.id, &commit_metadata)
+                .map_err(|e| git2::Error::from_str(&format!("Failed to store metadata: {}", e)))?;
+        }
+    }
     
     Ok(())
 }

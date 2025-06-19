@@ -3,6 +3,7 @@ use inquire::Select;
 
 mod git_ops;
 mod branch_naming;
+mod metadata;
 
 #[derive(Parser)]
 #[command(name = "gitx")]
