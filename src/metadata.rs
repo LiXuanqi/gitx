@@ -10,6 +10,27 @@ pub struct CommitMetadata {
     pub status: PRStatus,
     pub created_at: DateTime<Utc>,
     pub last_updated: DateTime<Utc>,
+    #[serde(default)]
+    pub original_commit_id: String,
+    #[serde(default)]
+    pub incremental_commits: Vec<IncrementalCommit>,
+}
+
+/// Information about an incremental commit added to a PR branch
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IncrementalCommit {
+    pub commit_id: String,
+    pub message: String,
+    pub created_at: DateTime<Utc>,
+    pub commit_type: IncrementalCommitType,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum IncrementalCommitType {
+    /// Original commit was amended
+    AmendedCommit,
+    /// New commit added to this feature
+    AdditionalCommit,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -25,7 +46,7 @@ const GITX_NOTES_REF: &str = "refs/notes/gitx-metadata";
 
 impl CommitMetadata {
     /// Create new metadata for a branch that was just created
-    pub fn new_branch_created(pr_branch_name: String) -> Self {
+    pub fn new_branch_created(pr_branch_name: String, original_commit_id: String) -> Self {
         let now = Utc::now();
         Self {
             pr_branch_name,
@@ -33,6 +54,8 @@ impl CommitMetadata {
             status: PRStatus::BranchCreated,
             created_at: now,
             last_updated: now,
+            original_commit_id,
+            incremental_commits: Vec::new(),
         }
     }
     
@@ -49,6 +72,30 @@ impl CommitMetadata {
         self.status = PRStatus::PRMerged;
         self.last_updated = Utc::now();
         self
+    }
+    
+    /// Add an incremental commit to this PR
+    pub fn add_incremental_commit(mut self, commit_id: String, message: String, commit_type: IncrementalCommitType) -> Self {
+        let incremental_commit = IncrementalCommit {
+            commit_id,
+            message,
+            created_at: Utc::now(),
+            commit_type,
+        };
+        
+        self.incremental_commits.push(incremental_commit);
+        self.last_updated = Utc::now();
+        self
+    }
+    
+    /// Check if the original commit has been changed (amended)
+    pub fn is_commit_changed(&self, current_commit_id: &str) -> bool {
+        // If original_commit_id is empty (backward compatibility), assume no change
+        if self.original_commit_id.is_empty() {
+            false
+        } else {
+            self.original_commit_id != current_commit_id
+        }
     }
 }
 
@@ -152,6 +199,41 @@ pub fn has_pr_metadata(commit_id: &Oid) -> bool {
     get_commit_metadata(commit_id).unwrap_or(None).is_some()
 }
 
+/// Check if a commit at the current position differs from its stored metadata
+/// Returns (has_metadata, needs_incremental_update)
+pub fn check_commit_for_updates(current_oid: &Oid) -> Result<(bool, bool), git2::Error> {
+    match get_commit_metadata(current_oid)? {
+        Some(metadata) => {
+            let current_commit_id = current_oid.to_string();
+            let needs_update = metadata.is_commit_changed(&current_commit_id);
+            Ok((true, needs_update))
+        }
+        None => Ok((false, false)),
+    }
+}
+
+/// Find commits that need incremental updates
+pub fn find_commits_needing_updates() -> Result<Vec<(Oid, CommitMetadata)>, git2::Error> {
+    let all_pr_commits = list_all_pr_commits()?;
+    let mut needs_updates = Vec::new();
+    
+    let repo = Repository::open(".")?;
+    
+    for (stored_oid, metadata) in all_pr_commits {
+        // Try to find the commit at the stored position
+        if let Ok(stored_commit) = repo.find_commit(stored_oid) {
+            let current_commit_id = stored_oid.to_string();
+            
+            // Check if the commit content has changed (this would happen if rebased/amended)
+            if metadata.is_commit_changed(&current_commit_id) {
+                needs_updates.push((stored_oid, metadata));
+            }
+        }
+    }
+    
+    Ok(needs_updates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,20 +254,55 @@ mod tests {
 
     #[test]
     fn test_commit_metadata_creation() {
-        let metadata = CommitMetadata::new_branch_created("gitx/test/feature".to_string());
+        let metadata = CommitMetadata::new_branch_created(
+            "gitx/test/feature".to_string(),
+            "1234567890abcdef".to_string()
+        );
         
         assert_eq!(metadata.pr_branch_name, "gitx/test/feature");
+        assert_eq!(metadata.original_commit_id, "1234567890abcdef");
         assert!(metadata.github_pr_number.is_none());
         assert!(matches!(metadata.status, PRStatus::BranchCreated));
+        assert!(metadata.incremental_commits.is_empty());
     }
 
     #[test]
     fn test_metadata_with_pr_number() {
-        let metadata = CommitMetadata::new_branch_created("gitx/test/feature".to_string())
-            .with_pr_number(123);
+        let metadata = CommitMetadata::new_branch_created(
+            "gitx/test/feature".to_string(),
+            "1234567890abcdef".to_string()
+        ).with_pr_number(123);
         
         assert_eq!(metadata.github_pr_number, Some(123));
         assert!(matches!(metadata.status, PRStatus::PRCreated));
+    }
+
+    #[test]
+    fn test_incremental_commit_handling() {
+        let metadata = CommitMetadata::new_branch_created(
+            "gitx/test/feature".to_string(),
+            "1234567890abcdef".to_string()
+        ).add_incremental_commit(
+            "abcdef1234567890".to_string(),
+            "Updated feature implementation".to_string(),
+            IncrementalCommitType::AmendedCommit
+        );
+        
+        assert_eq!(metadata.incremental_commits.len(), 1);
+        assert_eq!(metadata.incremental_commits[0].commit_id, "abcdef1234567890");
+        assert_eq!(metadata.incremental_commits[0].message, "Updated feature implementation");
+        assert!(matches!(metadata.incremental_commits[0].commit_type, IncrementalCommitType::AmendedCommit));
+    }
+
+    #[test]
+    fn test_commit_change_detection() {
+        let metadata = CommitMetadata::new_branch_created(
+            "gitx/test/feature".to_string(),
+            "1234567890abcdef".to_string()
+        );
+        
+        assert!(!metadata.is_commit_changed("1234567890abcdef"));
+        assert!(metadata.is_commit_changed("abcdef1234567890"));
     }
 
     #[test]

@@ -57,31 +57,48 @@ fn main() {
             }
         }
         Commands::Diff => {
-            match git_ops::get_unpushed_commits() {
-                Ok(commits) => {
-                    if commits.is_empty() {
-                        println!("No new commits to create PRs for");
+            match git_ops::get_commits_needing_processing() {
+                Ok(updates) => {
+                    if updates.is_empty() {
+                        println!("No new commits or updates to process");
                         return;
                     }
                     
-                    println!("Found {} commits that could become PRs:", commits.len());
+                    let mut new_branches = 0;
+                    let mut incremental_updates = 0;
                     
-                    // Create branches for each commit
-                    let mut created_count = 0;
-                    for commit in &commits {
-                        println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
-                        
-                        match git_ops::create_pr_branch(commit) {
-                            Ok(()) => {
-                                created_count += 1;
+                    for update in &updates {
+                        match update {
+                            git_ops::CommitUpdateType::NewCommit(commit) => {
+                                println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
+                                
+                                match git_ops::create_pr_branch(commit) {
+                                    Ok(()) => {
+                                        new_branches += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error creating branch '{}': {}", commit.potential_branch_name, e);
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                eprintln!("Error creating branch '{}': {}", commit.potential_branch_name, e);
+                            git_ops::CommitUpdateType::IncrementalUpdate { original_oid, updated_oid, metadata } => {
+                                println!("Creating incremental update for: {}", metadata.pr_branch_name);
+                                
+                                match git_ops::create_incremental_commit(original_oid, updated_oid, metadata) {
+                                    Ok(()) => {
+                                        incremental_updates += 1;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error creating incremental commit for '{}': {}", metadata.pr_branch_name, e);
+                                    }
+                                }
                             }
                         }
                     }
                     
-                    println!("\nCreated {} PR branches", created_count);
+                    if new_branches > 0 || incremental_updates > 0 {
+                        println!("\nCompleted: {} new branches, {} incremental updates", new_branches, incremental_updates);
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error analyzing commits: {}", e);
