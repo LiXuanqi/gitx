@@ -68,6 +68,7 @@ impl CommitMetadata {
     }
     
     /// Mark as merged
+    #[allow(dead_code)]
     pub fn mark_merged(mut self) -> Self {
         self.status = PRStatus::PRMerged;
         self.last_updated = Utc::now();
@@ -187,6 +188,7 @@ pub fn list_all_pr_commits() -> Result<Vec<(Oid, CommitMetadata)>, git2::Error> 
 }
 
 /// Remove metadata for a commit (cleanup)
+#[allow(dead_code)]
 pub fn remove_commit_metadata(commit_id: &Oid) -> Result<(), git2::Error> {
     let repo = Repository::open(".")?;
     let signature = repo.signature()?;
@@ -247,6 +249,7 @@ pub fn get_all_pr_status() -> Result<Vec<PRStatusInfo>, git2::Error> {
 
 /// Check if a commit at the current position differs from its stored metadata
 /// Returns (has_metadata, needs_incremental_update)
+#[allow(dead_code)]
 pub fn check_commit_for_updates(current_oid: &Oid) -> Result<(bool, bool), git2::Error> {
     match get_commit_metadata(current_oid)? {
         Some(metadata) => {
@@ -259,6 +262,7 @@ pub fn check_commit_for_updates(current_oid: &Oid) -> Result<(bool, bool), git2:
 }
 
 /// Find commits that need incremental updates
+#[allow(dead_code)]
 pub fn find_commits_needing_updates() -> Result<Vec<(Oid, CommitMetadata)>, git2::Error> {
     let all_pr_commits = list_all_pr_commits()?;
     let mut needs_updates = Vec::new();

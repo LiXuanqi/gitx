@@ -56,6 +56,16 @@ pub enum CommitUpdateType {
 
 /// Get commits on main branch that need processing (new commits or incremental updates)
 pub fn get_commits_needing_processing() -> Result<Vec<CommitUpdateType>, git2::Error> {
+    get_commits_needing_processing_impl(false)
+}
+
+/// Get only the latest commit that needs processing
+pub fn get_latest_commit_needing_processing() -> Result<Vec<CommitUpdateType>, git2::Error> {
+    get_commits_needing_processing_impl(true)
+}
+
+/// Internal implementation for getting commits needing processing
+fn get_commits_needing_processing_impl(latest_only: bool) -> Result<Vec<CommitUpdateType>, git2::Error> {
     let repo = Repository::open(".")?;
     let mut updates = Vec::new();
     
@@ -70,7 +80,9 @@ pub fn get_commits_needing_processing() -> Result<Vec<CommitUpdateType>, git2::E
     
     let username = get_git_username().unwrap_or_else(|_| "unknown".to_string());
     
-    for oid in revwalk.take(10) { // Limit to last 10 commits for now
+    let commit_limit = if latest_only { 1 } else { 10 }; // Only 1 commit if latest_only
+    
+    for oid in revwalk.take(commit_limit) {
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
         let message = commit.message().unwrap_or("").to_string();
@@ -113,6 +125,7 @@ pub fn get_commits_needing_processing() -> Result<Vec<CommitUpdateType>, git2::E
 }
 
 /// Legacy function for backward compatibility
+#[allow(dead_code)]
 pub fn get_unpushed_commits() -> Result<Vec<CommitInfo>, git2::Error> {
     let updates = get_commits_needing_processing()?;
     let mut commits = Vec::new();

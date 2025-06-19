@@ -24,6 +24,9 @@ enum Commands {
         /// Also create/update GitHub PRs
         #[arg(long)]
         github: bool,
+        /// Process all commits instead of just the latest
+        #[arg(long)]
+        all: bool,
     },
     /// Show status of current stacked PRs
     Status,
@@ -74,8 +77,14 @@ async fn main() {
                 }
             }
         }
-        Commands::Diff { github } => {
-            match git_ops::get_commits_needing_processing() {
+        Commands::Diff { github, all } => {
+            let updates = if *all {
+                git_ops::get_commits_needing_processing()
+            } else {
+                git_ops::get_latest_commit_needing_processing()
+            };
+            
+            match updates {
                 Ok(updates) => {
                     if updates.is_empty() {
                         println!("No new commits or updates to process");
@@ -99,7 +108,14 @@ async fn main() {
                                             new_branches += 1;
                                         }
                                         Err(e) => {
-                                            eprintln!("Error creating branch/PR '{}': {}", commit.potential_branch_name, e);
+                                            eprintln!("Error creating branch/PR '{}': {:#}", commit.potential_branch_name, e);
+                                            
+                                            // Print the full error chain for debugging
+                                            let mut source = e.source();
+                                            while let Some(err) = source {
+                                                eprintln!("  Caused by: {}", err);
+                                                source = err.source();
+                                            }
                                         }
                                     }
                                 } else {
@@ -122,7 +138,14 @@ async fn main() {
                                             incremental_updates += 1;
                                         }
                                         Err(e) => {
-                                            eprintln!("Error creating incremental commit/PR update for '{}': {}", metadata.pr_branch_name, e);
+                                            eprintln!("Error creating incremental commit/PR update for '{}': {:#}", metadata.pr_branch_name, e);
+                                            
+                                            // Print the full error chain for debugging
+                                            let mut source = e.source();
+                                            while let Some(err) = source {
+                                                eprintln!("  Caused by: {}", err);
+                                                source = err.source();
+                                            }
                                         }
                                     }
                                 } else {
