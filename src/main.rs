@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use inquire::Select;
 
 mod git_ops;
+mod branch_naming;
 
 #[derive(Parser)]
 #[command(name = "gitx")]
@@ -15,6 +16,8 @@ struct Cli {
 enum Commands {
     /// Branch operations
     Branch,
+    /// Create/update stacked PRs from commits
+    Diff,
 }
 
 fn main() {
@@ -49,6 +52,38 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error getting branches: {}", e);
+                }
+            }
+        }
+        Commands::Diff => {
+            match git_ops::get_unpushed_commits() {
+                Ok(commits) => {
+                    if commits.is_empty() {
+                        println!("No new commits to create PRs for");
+                        return;
+                    }
+                    
+                    println!("Found {} commits that could become PRs:", commits.len());
+                    
+                    // Create branches for each commit
+                    let mut created_count = 0;
+                    for commit in &commits {
+                        println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
+                        
+                        match git_ops::create_pr_branch(commit) {
+                            Ok(()) => {
+                                created_count += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("Error creating branch '{}': {}", commit.potential_branch_name, e);
+                            }
+                        }
+                    }
+                    
+                    println!("\nCreated {} PR branches", created_count);
+                }
+                Err(e) => {
+                    eprintln!("Error analyzing commits: {}", e);
                 }
             }
         }
