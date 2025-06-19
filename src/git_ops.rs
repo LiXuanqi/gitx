@@ -226,40 +226,50 @@ pub async fn create_pr_branch_with_github(
     commit_info: &CommitInfo,
     enable_github: bool,
 ) -> Result<Option<github::PRInfo>, Box<dyn std::error::Error>> {
-    // First create the local branch and metadata
-    create_pr_branch(commit_info).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    
     if !enable_github {
+        // Local-only mode: create persistent local branch
+        create_pr_branch(commit_info).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         return Ok(None);
     }
     
+    // GitHub mode: create transient branch, push, create PR, then delete local branch
+    create_transient_pr_branch_with_github(commit_info).await
+}
+
+/// Create a transient PR branch that only exists on GitHub (deleted locally after push)
+pub async fn create_transient_pr_branch_with_github(
+    commit_info: &CommitInfo,
+) -> Result<Option<github::PRInfo>, Box<dyn std::error::Error>> {
     // Check if GitHub token is available
     if !github::check_github_token() {
         println!("Warning: GITHUB_TOKEN not set, skipping GitHub PR creation");
         return Ok(None);
     }
     
-    // Create GitHub client and push branch
-    let github_client = github::GitHubClient::new().await?;
+    let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
-    // Push the branch to origin
+    // 1. Create temporary local branch
+    let commit = repo.find_commit(commit_info.id).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let mut temp_branch = repo.branch(&commit_info.potential_branch_name, &commit, false)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    // 2. Create GitHub client and push branch
+    let github_client = github::GitHubClient::new().await?;
     github_client.push_branch(&commit_info.potential_branch_name).await?;
     
-    // Get commit message for PR title and body
-    let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    let commit = repo.find_commit(commit_info.id).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    // 3. Create metadata (before deleting local branch)
     let commit_message = commit.message().unwrap_or("");
+    let commit_metadata = metadata::CommitMetadata::new_branch_created(
+        commit_info.potential_branch_name.clone(),
+        commit_info.id.to_string()
+    );
+    metadata::store_commit_metadata(&commit_info.id, &commit_metadata)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
-    // Get the metadata we just created
-    let commit_metadata = metadata::get_commit_metadata(&commit_info.id)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
-        .ok_or("Metadata not found after creation")?;
-    
-    // Generate PR title and body
+    // 4. Create the PR
     let pr_title = commit_message.lines().next().unwrap_or("Untitled commit").to_string();
     let pr_body = github_client.generate_pr_body(&commit_metadata, commit_message);
     
-    // Create the PR
     let pr_info = github_client.create_pr(
         &commit_info.potential_branch_name,
         &pr_title,
@@ -267,12 +277,15 @@ pub async fn create_pr_branch_with_github(
         "main", // TODO: detect base branch
     ).await?;
     
-    // Update metadata with PR number
+    // 5. Update metadata with PR number
     let updated_metadata = commit_metadata.with_pr_number(pr_info.number);
     metadata::update_commit_metadata(&commit_info.id, &updated_metadata)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
-    println!("Created GitHub PR #{}: {}", pr_info.number, pr_info.url);
+    // 6. Delete the local branch (keep only on GitHub)
+    temp_branch.delete().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    println!("Created GitHub PR #{}: {} (transient branch deleted locally)", pr_info.number, pr_info.url);
     
     Ok(Some(pr_info))
 }
@@ -284,14 +297,25 @@ pub async fn create_incremental_commit_with_github(
     pr_metadata: &metadata::CommitMetadata,
     enable_github: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // First create the local incremental commit
-    create_incremental_commit(original_commit_oid, updated_commit_oid, pr_metadata)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    if !enable_github {
+        // Local-only mode: create persistent local incremental commit
+        create_incremental_commit(original_commit_oid, updated_commit_oid, pr_metadata)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        return Ok(());
+    }
     
-    if !enable_github || pr_metadata.github_pr_number.is_none() {
-        if enable_github {
-            println!("Warning: No GitHub PR number found, skipping PR update");
-        }
+    // GitHub mode: create transient incremental commit
+    create_transient_incremental_commit_with_github(original_commit_oid, updated_commit_oid, pr_metadata).await
+}
+
+/// Create a transient incremental commit that only exists on GitHub (deleted locally after push)
+pub async fn create_transient_incremental_commit_with_github(
+    original_commit_oid: &Oid,
+    updated_commit_oid: &Oid,
+    pr_metadata: &metadata::CommitMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if pr_metadata.github_pr_number.is_none() {
+        println!("Warning: No GitHub PR number found, skipping PR update");
         return Ok(());
     }
     
@@ -301,30 +325,54 @@ pub async fn create_incremental_commit_with_github(
         return Ok(());
     }
     
-    // Create GitHub client
-    let github_client = github::GitHubClient::new().await?;
+    let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
-    // Push the updated branch
+    // 1. Create temporary local branch with incremental commit
+    let updated_commit = repo.find_commit(*updated_commit_oid).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let mut temp_branch = repo.branch(&pr_metadata.pr_branch_name, &updated_commit, false)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    // 2. Create incremental commit on the temp branch
+    let signature = repo.signature().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let incremental_message = format!(
+        "Incremental update to: {}\n\nUpdated from commit {}",
+        updated_commit.message().unwrap_or("").lines().next().unwrap_or(""),
+        &original_commit_oid.to_string()[..8]
+    );
+    
+    let tree = updated_commit.tree().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    repo.commit(
+        Some(&format!("refs/heads/{}", pr_metadata.pr_branch_name)),
+        &signature,
+        &signature,
+        &incremental_message,
+        &tree,
+        &[&updated_commit],
+    ).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    // 3. Push the updated branch to GitHub
+    let github_client = github::GitHubClient::new().await?;
     github_client.push_branch(&pr_metadata.pr_branch_name).await?;
     
-    // Get updated metadata (it was modified by create_incremental_commit)
-    let updated_metadata = metadata::get_commit_metadata(original_commit_oid)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
-        .ok_or("Metadata not found after incremental commit")?;
+    // 4. Update metadata to track this incremental commit
+    let updated_metadata = pr_metadata.clone().add_incremental_commit(
+        updated_commit_oid.to_string(),
+        updated_commit.message().unwrap_or("").to_string(),
+        metadata::IncrementalCommitType::AmendedCommit,
+    );
+    metadata::update_commit_metadata(original_commit_oid, &updated_metadata)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
-    // Get commit message for PR body update
-    let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    let commit = repo.find_commit(*updated_commit_oid).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    let commit_message = commit.message().unwrap_or("");
-    
-    // Generate updated PR body
+    // 5. Update the GitHub PR
+    let commit_message = updated_commit.message().unwrap_or("");
     let pr_body = github_client.generate_pr_body(&updated_metadata, commit_message);
-    
-    // Update the PR
     let pr_number = pr_metadata.github_pr_number.unwrap();
     github_client.update_pr(pr_number, None, Some(&pr_body)).await?;
     
-    println!("Updated GitHub PR #{}", pr_number);
+    // 6. Delete the local branch (keep only on GitHub)
+    temp_branch.delete().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    println!("Updated GitHub PR #{} (transient branch deleted locally)", pr_number);
     
     Ok(())
 }
@@ -395,7 +443,7 @@ pub async fn land_merged_prs(all: bool, dry_run: bool) -> Result<(), Box<dyn std
         println!("🧹 Cleaning up merged PRs:");
         
         for (_, pr_info) in &merged_prs {
-            println!("  🗑️  Would delete branch: {}", pr_info.branch_name);
+            println!("  🗑️  Would delete remote branch: {}", pr_info.branch_name);
             println!("  📝 Would update metadata: mark PR as merged");
         }
         
@@ -411,7 +459,7 @@ pub async fn land_merged_prs(all: bool, dry_run: bool) -> Result<(), Box<dyn std
     for (github_status, pr_info) in &merged_prs {
         match cleanup_merged_pr(pr_info, github_status.number).await {
             Ok(()) => {
-                println!("  🗑️  Deleted branch: {}", pr_info.branch_name);
+                println!("  🗑️  Deleted remote branch: {}", pr_info.branch_name);
                 println!("  📝 Updated metadata: marked PR #{} as merged", github_status.number);
                 cleaned_up += 1;
             }
@@ -441,7 +489,7 @@ pub async fn land_merged_prs(all: bool, dry_run: bool) -> Result<(), Box<dyn std
     Ok(())
 }
 
-/// Clean up a single merged PR: delete local branch and update metadata
+/// Clean up a single merged PR: delete remote branch and update metadata
 async fn cleanup_merged_pr(
     pr_info: &metadata::PRStatusInfo, 
     _pr_number: u64
@@ -449,15 +497,26 @@ async fn cleanup_merged_pr(
     let repo = Repository::open(".")
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
-    // Delete the local branch if it exists
+    // Delete the local branch if it exists (for backward compatibility with old workflow)
     match repo.find_branch(&pr_info.branch_name, BranchType::Local) {
         Ok(mut branch) => {
             branch.delete()?;
         }
         Err(e) if e.code() == git2::ErrorCode::NotFound => {
-            // Branch doesn't exist locally, that's fine
+            // Branch doesn't exist locally, that's expected with transient branches
         }
         Err(e) => return Err(Box::new(e) as Box<dyn std::error::Error>),
+    }
+    
+    // Delete the remote branch on GitHub
+    match delete_remote_branch(&pr_info.branch_name).await {
+        Ok(()) => {
+            // Remote branch deleted successfully
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to delete remote branch {}: {}", pr_info.branch_name, e);
+            // Continue with metadata cleanup even if remote deletion fails
+        }
     }
     
     // Update metadata to mark as merged
@@ -469,6 +528,22 @@ async fn cleanup_merged_pr(
         
         metadata::update_commit_metadata(&commit_oid, &metadata)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    }
+    
+    Ok(())
+}
+
+/// Delete a remote branch from GitHub
+async fn delete_remote_branch(branch_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Use git command to delete the remote branch
+    let output = tokio::process::Command::new("git")
+        .args(&["push", "origin", "--delete", branch_name])
+        .output()
+        .await?;
+    
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to delete remote branch: {}", error).into());
     }
     
     Ok(())

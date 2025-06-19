@@ -86,8 +86,12 @@ fn display_pr_status(
         title
     );
     
-    // Branch info
-    println!("   📁 Branch: {}", pr_status.branch_name);
+    // Branch info (remote-only for GitHub PRs)
+    if pr_status.pr_number.is_some() {
+        println!("   📁 Remote branch: {}", pr_status.branch_name);
+    } else {
+        println!("   📁 Branch: {}", pr_status.branch_name);
+    }
     
     // GitHub PR info if available
     if let Some(pr_number) = pr_status.pr_number {
