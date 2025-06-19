@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.40", features = ["derive"] }
+git2 = { version = "0.20.2", default-features = false } # TODO: remove default-features = false in the future
+inquire = "0.7.5"
