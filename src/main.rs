@@ -4,6 +4,7 @@ use inquire::Select;
 mod git_ops;
 mod branch_naming;
 mod metadata;
+mod github;
 
 #[derive(Parser)]
 #[command(name = "gitx")]
@@ -18,10 +19,15 @@ enum Commands {
     /// Branch operations
     Branch,
     /// Create/update stacked PRs from commits
-    Diff,
+    Diff {
+        /// Also create/update GitHub PRs
+        #[arg(long)]
+        github: bool,
+    },
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
@@ -56,7 +62,7 @@ fn main() {
                 }
             }
         }
-        Commands::Diff => {
+        Commands::Diff { github } => {
             match git_ops::get_commits_needing_processing() {
                 Ok(updates) => {
                     if updates.is_empty() {
@@ -72,24 +78,49 @@ fn main() {
                             git_ops::CommitUpdateType::NewCommit(commit) => {
                                 println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
                                 
-                                match git_ops::create_pr_branch(commit) {
-                                    Ok(()) => {
-                                        new_branches += 1;
+                                if *github {
+                                    match git_ops::create_pr_branch_with_github(commit, true).await {
+                                        Ok(Some(_pr_info)) => {
+                                            new_branches += 1;
+                                        }
+                                        Ok(None) => {
+                                            new_branches += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Error creating branch/PR '{}': {}", commit.potential_branch_name, e);
+                                        }
                                     }
-                                    Err(e) => {
-                                        eprintln!("Error creating branch '{}': {}", commit.potential_branch_name, e);
+                                } else {
+                                    match git_ops::create_pr_branch(commit) {
+                                        Ok(()) => {
+                                            new_branches += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Error creating branch '{}': {}", commit.potential_branch_name, e);
+                                        }
                                     }
                                 }
                             }
                             git_ops::CommitUpdateType::IncrementalUpdate { original_oid, updated_oid, metadata } => {
                                 println!("Creating incremental update for: {}", metadata.pr_branch_name);
                                 
-                                match git_ops::create_incremental_commit(original_oid, updated_oid, metadata) {
-                                    Ok(()) => {
-                                        incremental_updates += 1;
+                                if *github {
+                                    match git_ops::create_incremental_commit_with_github(original_oid, updated_oid, metadata, true).await {
+                                        Ok(()) => {
+                                            incremental_updates += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Error creating incremental commit/PR update for '{}': {}", metadata.pr_branch_name, e);
+                                        }
                                     }
-                                    Err(e) => {
-                                        eprintln!("Error creating incremental commit for '{}': {}", metadata.pr_branch_name, e);
+                                } else {
+                                    match git_ops::create_incremental_commit(original_oid, updated_oid, metadata) {
+                                        Ok(()) => {
+                                            incremental_updates += 1;
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Error creating incremental commit for '{}': {}", metadata.pr_branch_name, e);
+                                        }
                                     }
                                 }
                             }

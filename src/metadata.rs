@@ -221,7 +221,7 @@ pub fn find_commits_needing_updates() -> Result<Vec<(Oid, CommitMetadata)>, git2
     
     for (stored_oid, metadata) in all_pr_commits {
         // Try to find the commit at the stored position
-        if let Ok(stored_commit) = repo.find_commit(stored_oid) {
+        if let Ok(_stored_commit) = repo.find_commit(stored_oid) {
             let current_commit_id = stored_oid.to_string();
             
             // Check if the commit content has changed (this would happen if rebased/amended)

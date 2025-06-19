@@ -1,6 +1,7 @@
 use git2::{Repository, BranchType, Oid};
 use crate::branch_naming;
 use crate::metadata;
+use crate::github;
 
 pub fn get_all_branches() -> Result<Vec<String>, git2::Error> {
     let repo = Repository::open(".")?;
@@ -216,6 +217,114 @@ pub fn create_incremental_commit(
     
     metadata::update_commit_metadata(original_commit_oid, &updated_metadata)
         .map_err(|e| git2::Error::from_str(&format!("Failed to update metadata: {}", e)))?;
+    
+    Ok(())
+}
+
+/// Create a PR branch and optionally create GitHub PR
+pub async fn create_pr_branch_with_github(
+    commit_info: &CommitInfo,
+    enable_github: bool,
+) -> Result<Option<github::PRInfo>, Box<dyn std::error::Error>> {
+    // First create the local branch and metadata
+    create_pr_branch(commit_info).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    if !enable_github {
+        return Ok(None);
+    }
+    
+    // Check if GitHub token is available
+    if !github::check_github_token() {
+        println!("Warning: GITHUB_TOKEN not set, skipping GitHub PR creation");
+        return Ok(None);
+    }
+    
+    // Create GitHub client and push branch
+    let github_client = github::GitHubClient::new().await?;
+    
+    // Push the branch to origin
+    github_client.push_branch(&commit_info.potential_branch_name).await?;
+    
+    // Get commit message for PR title and body
+    let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let commit = repo.find_commit(commit_info.id).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let commit_message = commit.message().unwrap_or("");
+    
+    // Get the metadata we just created
+    let commit_metadata = metadata::get_commit_metadata(&commit_info.id)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+        .ok_or("Metadata not found after creation")?;
+    
+    // Generate PR title and body
+    let pr_title = commit_message.lines().next().unwrap_or("Untitled commit").to_string();
+    let pr_body = github_client.generate_pr_body(&commit_metadata, commit_message);
+    
+    // Create the PR
+    let pr_info = github_client.create_pr(
+        &commit_info.potential_branch_name,
+        &pr_title,
+        &pr_body,
+        "main", // TODO: detect base branch
+    ).await?;
+    
+    // Update metadata with PR number
+    let updated_metadata = commit_metadata.with_pr_number(pr_info.number);
+    metadata::update_commit_metadata(&commit_info.id, &updated_metadata)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    println!("Created GitHub PR #{}: {}", pr_info.number, pr_info.url);
+    
+    Ok(Some(pr_info))
+}
+
+/// Create incremental commit and optionally update GitHub PR
+pub async fn create_incremental_commit_with_github(
+    original_commit_oid: &Oid,
+    updated_commit_oid: &Oid,
+    pr_metadata: &metadata::CommitMetadata,
+    enable_github: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // First create the local incremental commit
+    create_incremental_commit(original_commit_oid, updated_commit_oid, pr_metadata)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
+    if !enable_github || pr_metadata.github_pr_number.is_none() {
+        if enable_github {
+            println!("Warning: No GitHub PR number found, skipping PR update");
+        }
+        return Ok(());
+    }
+    
+    // Check if GitHub token is available
+    if !github::check_github_token() {
+        println!("Warning: GITHUB_TOKEN not set, skipping GitHub PR update");
+        return Ok(());
+    }
+    
+    // Create GitHub client
+    let github_client = github::GitHubClient::new().await?;
+    
+    // Push the updated branch
+    github_client.push_branch(&pr_metadata.pr_branch_name).await?;
+    
+    // Get updated metadata (it was modified by create_incremental_commit)
+    let updated_metadata = metadata::get_commit_metadata(original_commit_oid)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?
+        .ok_or("Metadata not found after incremental commit")?;
+    
+    // Get commit message for PR body update
+    let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let commit = repo.find_commit(*updated_commit_oid).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let commit_message = commit.message().unwrap_or("");
+    
+    // Generate updated PR body
+    let pr_body = github_client.generate_pr_body(&updated_metadata, commit_message);
+    
+    // Update the PR
+    let pr_number = pr_metadata.github_pr_number.unwrap();
+    github_client.update_pr(pr_number, None, Some(&pr_body)).await?;
+    
+    println!("Updated GitHub PR #{}", pr_number);
     
     Ok(())
 }
