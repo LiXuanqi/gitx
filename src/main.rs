@@ -35,7 +35,13 @@ enum Commands {
         all: bool,
     },
     /// Show status of current stacked PRs
-    Status,
+    Prs,
+    /// Show git status (passthrough to git status)
+    Status {
+        /// Arguments to pass to git status
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Clean up merged PRs and sync with remote
     Land {
         /// Clean up all merged PRs
@@ -195,13 +201,31 @@ async fn main() {
                 }
             }
         }
-        Commands::Status => {
+        Commands::Prs => {
             match status_display::display_status().await {
                 Ok(()) => {
                     // Status displayed successfully
                 }
                 Err(e) => {
                     eprintln!("Error displaying status: {}", e);
+                }
+            }
+        }
+        Commands::Status { args } => {
+            // Passthrough to git status with all provided arguments
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("status");
+            cmd.args(args);
+            
+            match cmd.status() {
+                Ok(status) => {
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error running git status: {}", e);
+                    std::process::exit(1);
                 }
             }
         }
