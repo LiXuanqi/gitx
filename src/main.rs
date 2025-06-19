@@ -19,6 +19,12 @@ struct Cli {
 enum Commands {
     /// Branch operations
     Branch,
+    /// Create a commit (passthrough to git commit)
+    Commit {
+        /// Arguments to pass to git commit
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Create/update stacked PRs from commits
     Diff {
         /// Also create/update GitHub PRs
@@ -74,6 +80,24 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error getting branches: {}", e);
+                }
+            }
+        }
+        Commands::Commit { args } => {
+            // Passthrough to git commit with all provided arguments
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("commit");
+            cmd.args(args);
+            
+            match cmd.status() {
+                Ok(status) => {
+                    if !status.success() {
+                        std::process::exit(status.code().unwrap_or(1));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error running git commit: {}", e);
+                    std::process::exit(1);
                 }
             }
         }
