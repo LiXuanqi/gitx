@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use inquire::Select;
+use inquire::{Select, MultiSelect};
 
 mod git_ops;
 mod branch_naming;
@@ -30,7 +30,7 @@ enum Commands {
         /// Also create/update GitHub PRs
         #[arg(long)]
         github: bool,
-        /// Process all commits instead of just the latest
+        /// Show all commits and let user choose interactively
         #[arg(long)]
         all: bool,
     },
@@ -51,6 +51,51 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+/// Display commits and let user interactively select which ones to process
+fn select_commits_to_process(updates: &[git_ops::CommitUpdateType]) -> Result<Vec<git_ops::CommitUpdateType>, Box<dyn std::error::Error>> {
+    // Create display options for the user with indices
+    let options: Vec<(usize, String)> = updates.iter().enumerate().map(|(i, update)| {
+        let display = match update {
+            git_ops::CommitUpdateType::NewCommit(commit) => {
+                let short_id = &commit.id.to_string()[..8];
+                let title = commit.message.lines().next().unwrap_or("Untitled");
+                format!("🆕 {} {} (new commit)", short_id, title)
+            }
+            git_ops::CommitUpdateType::IncrementalUpdate { updated_oid, metadata, .. } => {
+                let short_id = &updated_oid.to_string()[..8];
+                let title = metadata.pr_branch_name.split('/').last().unwrap_or("unknown");
+                format!("🔄 {} {} (incremental update)", short_id, title)
+            }
+        };
+        (i, display)
+    }).collect();
+    
+    // Extract just the display strings for the menu
+    let option_strings: Vec<String> = options.iter().map(|(_, display)| display.clone()).collect();
+    
+    // Show multi-select menu
+    let selected_options = MultiSelect::new("Select commits to process:", option_strings)
+        .with_help_message("Use space to select/deselect, arrow keys to navigate, enter to confirm")
+        .prompt()?;
+    
+    if selected_options.is_empty() {
+        return Err("No commits selected".into());
+    }
+    
+    // Map selected options back to indices, then to commits
+    let selected_updates: Vec<git_ops::CommitUpdateType> = selected_options
+        .into_iter()
+        .filter_map(|selected_option| {
+            // Find the index for this selected option
+            options.iter()
+                .find(|(_, display)| *display == selected_option)
+                .map(|(index, _)| updates[*index].clone())
+        })
+        .collect();
+    
+    Ok(selected_updates)
 }
 
 #[tokio::main]
@@ -121,10 +166,29 @@ async fn main() {
                         return;
                     }
                     
+                    // If --all flag is used, show interactive selection (if multiple commits)
+                    let selected_updates = if *all {
+                        if updates.len() > 1 {
+                            match select_commits_to_process(&updates) {
+                                Ok(selected) => selected,
+                                Err(e) => {
+                                    eprintln!("Selection cancelled: {}", e);
+                                    return;
+                                }
+                            }
+                        } else {
+                            // Only one commit, process it directly
+                            println!("Only one commit available, processing it:");
+                            updates
+                        }
+                    } else {
+                        updates
+                    };
+                    
                     let mut new_branches = 0;
                     let mut incremental_updates = 0;
                     
-                    for update in &updates {
+                    for update in &selected_updates {
                         match update {
                             git_ops::CommitUpdateType::NewCommit(commit) => {
                                 println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
