@@ -18,6 +18,9 @@ use std::process::Command as StdCommand;
 /// 
 /// // Fully configured with sample commits (great for testing)
 /// let repo = TestRepo::with_commits();
+/// 
+/// // Configured for mock GitHub API testing (best for integration tests)
+/// let repo = TestRepo::with_configured_gitx_and_commits();
 /// ```
 pub struct TestRepo {
     pub temp_dir: assert_fs::TempDir,
@@ -50,6 +53,21 @@ impl TestRepo {
     pub fn with_commits() -> Self {
         let repo = Self::with_gitx();
         repo.add_sample_commits();
+        repo
+    }
+
+    /// Create a git repository with gitx configuration, sample commits, and mock GitHub setup
+    pub fn with_configured_gitx_and_commits() -> Self {
+        let repo = Self::with_commits();
+        
+        // Set up gitx config for testing with mock GitHub API
+        repo.set_git_config("gitx.github.token", "mock_token")
+            .expect("Failed to set mock GitHub token");
+        repo.set_git_config("gitx.github.enabled", "true")
+            .expect("Failed to enable GitHub integration");
+        repo.set_git_config("gitx.github.baseBranch", "main")
+            .expect("Failed to set base branch");
+        
         repo
     }
 
@@ -294,5 +312,24 @@ mod tests {
         
         repo.assert_file_exists("feature.txt")
             .assert_file_content("feature.txt", "awesome feature");
+    }
+    
+    #[test]
+    fn test_with_configured_gitx_and_commits() {
+        let repo = TestRepo::with_configured_gitx_and_commits();
+        
+        // Should have all gitx configuration
+        assert!(repo.is_gitx_configured());
+        
+        // Should have mock GitHub configuration
+        assert_eq!(repo.get_git_config("gitx.github.token"), Some("mock_token".to_string()));
+        assert_eq!(repo.get_git_config("gitx.github.enabled"), Some("true".to_string()));
+        assert_eq!(repo.get_git_config("gitx.github.baseBranch"), Some("main".to_string()));
+        
+        // Should have sample commits
+        repo.assert_git_repo()
+            .assert_file_exists("initial.txt")
+            .assert_file_exists("feature.txt")
+            .assert_file_exists("bugfix.txt");
     }
 }

@@ -20,13 +20,8 @@ async fn test_gitx_diff_creates_pr_successfully() {
     // Mock the GitHub API endpoints
     setup_github_api_mocks(&mock_server).await;
     
-    // Create test repository with commits
-    let repo = TestRepo::with_commits();
-    
-    // Set up gitx config to use our mock server
-    repo.set_git_config("gitx.github.token", "mock_token").unwrap();
-    repo.set_git_config("gitx.github.enabled", "true").unwrap();
-    repo.set_git_config("gitx.github.baseBranch", "main").unwrap();
+    // Create test repository with commits and mock GitHub configuration
+    let repo = TestRepo::with_configured_gitx_and_commits();
     
     // Override GitHub API base URL to use our mock server
     let mock_url = mock_server.uri();
@@ -61,10 +56,7 @@ async fn test_gitx_diff_handles_github_api_errors() {
         .mount(&mock_server)
         .await;
     
-    let repo = TestRepo::with_commits();
-    repo.set_git_config("gitx.github.token", "mock_token").unwrap();
-    repo.set_git_config("gitx.github.enabled", "true").unwrap();
-    repo.set_git_config("gitx.github.baseBranch", "main").unwrap();
+    let repo = TestRepo::with_configured_gitx_and_commits();
     
     let mock_url = mock_server.uri();
     unsafe { std::env::set_var("GITHUB_API_BASE_URL", &mock_url); }
@@ -120,10 +112,7 @@ async fn test_gitx_diff_updates_existing_pr() {
         .mount(&mock_server)
         .await;
     
-    let repo = TestRepo::with_commits();
-    repo.set_git_config("gitx.github.token", "mock_token").unwrap();
-    repo.set_git_config("gitx.github.enabled", "true").unwrap();
-    repo.set_git_config("gitx.github.baseBranch", "main").unwrap();
+    let repo = TestRepo::with_configured_gitx_and_commits();
     
     let mock_url = mock_server.uri();
     unsafe { std::env::set_var("GITHUB_API_BASE_URL", &mock_url); }
@@ -171,10 +160,7 @@ async fn test_gitx_diff_multiple_commits() {
     let mock_server = MockServer::start().await;
     setup_github_api_mocks(&mock_server).await;
     
-    let repo = TestRepo::with_commits();
-    repo.set_git_config("gitx.github.token", "mock_token").unwrap();
-    repo.set_git_config("gitx.github.enabled", "true").unwrap();
-    repo.set_git_config("gitx.github.baseBranch", "main").unwrap();
+    let repo = TestRepo::with_configured_gitx_and_commits();
     
     let mock_url = mock_server.uri();
     unsafe { std::env::set_var("GITHUB_API_BASE_URL", &mock_url); }
