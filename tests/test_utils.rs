@@ -64,7 +64,7 @@ impl TestRepo {
         assert!(output.status.success(), "Git init failed: {}", String::from_utf8_lossy(&output.stderr));
         
         // Configure basic git settings for the test repo
-        self.set_git_config("user.name", "Test User")
+        self.set_git_config("user.name", "TestUser")
             .expect("Failed to set git user.name");
         self.set_git_config("user.email", "test@example.com")
             .expect("Failed to set git user.email");
