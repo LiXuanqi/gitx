@@ -19,7 +19,7 @@ async fn main() {
     let result = match &cli.command {
         Commands::Branch => commands::branch::handle_branch(),
         Commands::Commit { args } => commands::commit::handle_commit(args),
-        Commands::Diff { github, all } => commands::diff::handle_diff(*github, *all).await,
+        Commands::Diff { all, dry_run } => commands::diff::handle_diff(*all, *dry_run).await,
         Commands::Init => commands::init::handle_init(),
         Commands::Land { all, dry_run } => commands::land::handle_land(*all, *dry_run).await,
         Commands::Prs => commands::prs::handle_prs().await,

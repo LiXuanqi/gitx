@@ -20,12 +20,12 @@ pub enum Commands {
     },
     /// Create/update stacked PRs from commits
     Diff {
-        /// Also create/update GitHub PRs
-        #[arg(long)]
-        github: bool,
         /// Show all commits and let user choose interactively
         #[arg(long)]
         all: bool,
+        /// Show what would be done without creating PRs
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show status of current stacked PRs
     Prs,

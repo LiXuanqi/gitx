@@ -43,6 +43,42 @@ pub fn get_git_username() -> Result<String, git2::Error> {
     config.get_string("user.name")
 }
 
+/// Determine the appropriate base branch for a commit by looking at its parent
+pub fn determine_base_branch_for_commit(commit_oid: &Oid) -> Result<String, git2::Error> {
+    let repo = Repository::open(".")?;
+    let commit = repo.find_commit(*commit_oid)?;
+    
+    // If the commit has parents, look at the first parent
+    if commit.parent_count() > 0 {
+        let parent_commit = commit.parent(0)?;
+        let parent_oid = parent_commit.id();
+        
+        // Check if the parent commit has metadata with a PR branch
+        if let Ok(Some(parent_metadata)) = metadata::get_commit_metadata(&parent_oid)
+            .map_err(|e| git2::Error::from_str(&e.to_string())) {
+            if let Some(_pr_number) = parent_metadata.github_pr_number {
+                // If parent has a PR, use its branch name as base
+                return Ok(parent_metadata.pr_branch_name);
+            }
+        }
+    }
+    
+    // Default fallback: use main or master
+    let main_ref = repo.find_reference("refs/heads/main")
+        .or_else(|_| repo.find_reference("refs/heads/master"));
+    
+    match main_ref {
+        Ok(ref_) => {
+            if let Some(name) = ref_.shorthand() {
+                Ok(name.to_string())
+            } else {
+                Ok("main".to_string())
+            }
+        }
+        Err(_) => Ok("main".to_string())
+    }
+}
+
 /// Information about updates needed for commits
 #[derive(Debug, Clone)]
 pub enum CommitUpdateType {
@@ -283,11 +319,15 @@ pub async fn create_transient_pr_branch_with_github(
     let pr_title = commit_message.lines().next().unwrap_or("Untitled commit").to_string();
     let pr_body = github_client.generate_pr_body(&commit_metadata, commit_message);
     
+    // Determine the appropriate base branch for this commit
+    let base_branch = determine_base_branch_for_commit(&commit_info.id)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    
     let pr_info = github_client.create_pr(
         &commit_info.potential_branch_name,
         &pr_title,
         &pr_body,
-        "main", // TODO: detect base branch
+        &base_branch,
     ).await?;
     
     // 5. Update metadata with PR number

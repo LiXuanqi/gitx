@@ -46,7 +46,7 @@ fn select_commits_to_process(updates: &[git_ops::CommitUpdateType]) -> Result<Ve
     Ok(selected_updates)
 }
 
-pub async fn handle_diff(github: bool, all: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn handle_diff(all: bool, dry_run: bool) -> Result<(), Box<dyn std::error::Error>> {
     let updates = if all {
         git_ops::get_commits_needing_processing()
     } else {
@@ -85,9 +85,12 @@ pub async fn handle_diff(github: bool, all: bool) -> Result<(), Box<dyn std::err
             for update in &selected_updates {
                 match update {
                     git_ops::CommitUpdateType::NewCommit(commit) => {
-                        println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
-                        
-                        if github {
+                        if dry_run {
+                            println!("Would create PR branch for: {}", commit.message.lines().next().unwrap_or(""));
+                            new_branches += 1;
+                        } else {
+                            println!("Creating PR branch for: {}", commit.message.lines().next().unwrap_or(""));
+                            
                             match git_ops::create_pr_branch_with_github(commit, true).await {
                                 Ok(Some(_pr_info)) => {
                                     new_branches += 1;
@@ -106,21 +109,15 @@ pub async fn handle_diff(github: bool, all: bool) -> Result<(), Box<dyn std::err
                                     }
                                 }
                             }
-                        } else {
-                            match git_ops::create_pr_branch(commit) {
-                                Ok(()) => {
-                                    new_branches += 1;
-                                }
-                                Err(e) => {
-                                    eprintln!("Error creating branch '{}': {}", commit.potential_branch_name, e);
-                                }
-                            }
                         }
                     }
                     git_ops::CommitUpdateType::IncrementalUpdate { original_oid, updated_oid, metadata } => {
-                        println!("Creating incremental update for: {}", metadata.pr_branch_name);
-                        
-                        if github {
+                        if dry_run {
+                            println!("Would create incremental update for: {}", metadata.pr_branch_name);
+                            incremental_updates += 1;
+                        } else {
+                            println!("Creating incremental update for: {}", metadata.pr_branch_name);
+                            
                             match git_ops::create_incremental_commit_with_github(original_oid, updated_oid, metadata, true).await {
                                 Ok(()) => {
                                     incremental_updates += 1;
@@ -136,22 +133,17 @@ pub async fn handle_diff(github: bool, all: bool) -> Result<(), Box<dyn std::err
                                     }
                                 }
                             }
-                        } else {
-                            match git_ops::create_incremental_commit(original_oid, updated_oid, metadata) {
-                                Ok(()) => {
-                                    incremental_updates += 1;
-                                }
-                                Err(e) => {
-                                    eprintln!("Error creating incremental commit for '{}': {}", metadata.pr_branch_name, e);
-                                }
-                            }
                         }
                     }
                 }
             }
             
             if new_branches > 0 || incremental_updates > 0 {
-                println!("\nCompleted: {} new branches, {} incremental updates", new_branches, incremental_updates);
+                if dry_run {
+                    println!("\nDry run completed: {} new branches, {} incremental updates would be created", new_branches, incremental_updates);
+                } else {
+                    println!("\nCompleted: {} new branches, {} incremental updates", new_branches, incremental_updates);
+                }
             }
         }
         Err(e) => {
