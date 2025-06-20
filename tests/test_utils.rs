@@ -1,6 +1,11 @@
 use assert_fs::prelude::*;
 use predicates::prelude::*;
 use std::process::Command as StdCommand;
+use serde_json::json;
+use wiremock::{
+    matchers::{method, path, header},
+    Mock, MockServer, ResponseTemplate,
+};
 
 /// A test repository wrapper that provides convenient methods for testing gitx functionality
 /// 
@@ -197,6 +202,68 @@ impl TestRepo {
         ];
         
         required_configs.iter().all(|key| self.get_git_config(key).is_some())
+    }
+
+    /// Set up origin remote for GitHub integration testing
+    pub fn setup_origin_remote(&self, owner: &str, repo: &str) -> &Self {
+        let remote_url = format!("https://github.com/{}/{}.git", owner, repo);
+        
+        let output = StdCommand::new("git")
+            .args(&["remote", "add", "origin", &remote_url])
+            .current_dir(&self.temp_dir)
+            .output()
+            .expect("Failed to add origin remote");
+        
+        assert!(output.status.success(), "Failed to add origin remote: {}", String::from_utf8_lossy(&output.stderr));
+        
+        self
+    }
+
+    /// Create a local repository to act as the "remote" for testing git push
+    /// This allows git push operations to succeed without hitting real GitHub
+    pub fn setup_mock_remote(&self) -> std::path::PathBuf {
+        use tempfile::TempDir;
+        
+        // Create a temporary directory for the mock remote
+        let remote_temp_dir = TempDir::new().expect("Failed to create temp dir for mock remote");
+        let remote_path = remote_temp_dir.path().to_path_buf();
+        
+        // Initialize bare repository to act as remote
+        let output = StdCommand::new("git")
+            .args(&["init", "--bare"])
+            .current_dir(&remote_path)
+            .output()
+            .expect("Failed to create mock remote repository");
+        
+        assert!(output.status.success(), "Failed to init bare repository: {}", String::from_utf8_lossy(&output.stderr));
+        
+        // Add GitHub URL as origin (so gitx detects it as a GitHub repository)
+        let github_url = "https://github.com/test-owner/test-repo.git";
+        let output = StdCommand::new("git")
+            .args(&["remote", "add", "origin", &github_url])
+            .current_dir(&self.temp_dir)
+            .output()
+            .expect("Failed to add origin remote");
+        
+        assert!(output.status.success(), "Failed to add origin remote: {}", String::from_utf8_lossy(&output.stderr));
+        
+        // Configure git URL rewriting for pushes only (keep fetch URL as GitHub)
+        let local_url = format!("file://{}", remote_path.display());
+        let output = StdCommand::new("git")
+            .args(&["config", &format!("remote.origin.pushurl"), &local_url])
+            .current_dir(&self.temp_dir)
+            .output()
+            .expect("Failed to set push URL");
+        
+        assert!(output.status.success(), "Failed to set push URL: {}", String::from_utf8_lossy(&output.stderr));
+        
+        // We need to keep the TempDir alive, so we'll store it in a way that it persists
+        // For now, let's return the path and let the caller manage cleanup
+        // In a real implementation, we might store this in the TestRepo struct
+        
+        // Keep the temp dir so it doesn't get dropped - the test will clean up
+        let leaked_remote_path = remote_temp_dir.keep();
+        leaked_remote_path
     }
 
     /// Get all git config as a string (useful for debugging)

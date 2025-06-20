@@ -7,7 +7,7 @@ use wiremock::{
 };
 
 mod test_utils;
-use test_utils::TestRepo;
+use test_utils::{TestRepo, GitHubMocks};
 
 /// Integration tests for `gitx diff` command using mock GitHub API server
 /// This tests the full workflow without making real GitHub API calls
@@ -18,7 +18,7 @@ async fn test_gitx_diff_creates_pr_successfully() {
     let mock_server = MockServer::start().await;
     
     // Mock the GitHub API endpoints
-    setup_github_api_mocks(&mock_server).await;
+    GitHubMocks::setup_default_mocks(&mock_server).await;
     
     // Create test repository with commits and mock GitHub configuration
     let repo = TestRepo::with_configured_gitx_and_commits();
