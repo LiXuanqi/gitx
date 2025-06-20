@@ -15,7 +15,7 @@ fn test_gitx_init_help() {
 
 #[test]
 fn test_gitx_init_in_non_git_directory() {
-    let repo = TestRepo::new(); // Not a git repo yet
+    let repo = TestRepo::empty(); // Not a git repo
     
     let mut cmd = Command::cargo_bin("gitx").unwrap();
     cmd.current_dir(&repo.temp_dir)
@@ -27,7 +27,7 @@ fn test_gitx_init_in_non_git_directory() {
 
 #[test]
 fn test_gitx_init_basic_setup() {
-    let repo = TestRepo::new_git();
+    let repo = TestRepo::with_git();
     
     // Test that we can run gitx init (but we can't easily test the interactive parts)
     // For now, let's test that it at least recognizes it's in a git repo
@@ -44,7 +44,7 @@ fn test_gitx_init_basic_setup() {
 
 #[test]
 fn test_git_config_functions() {
-    let repo = TestRepo::new_git();
+    let repo = TestRepo::with_git();
     
     // Manually set some gitx config values
     repo.set_git_config("gitx.github.token", "test_token")
@@ -62,7 +62,7 @@ fn test_git_config_functions() {
 
 #[test]
 fn test_gitx_config_verification() {
-    let repo = TestRepo::new_git();
+    let repo = TestRepo::with_git();
     
     // Manually configure gitx to simulate what init would do
     let configs = [
@@ -103,7 +103,7 @@ fn test_gitx_config_verification() {
 
 #[test]
 fn test_gitx_init_creates_proper_git_repo_structure() {
-    let repo = TestRepo::new_git();
+    let repo = TestRepo::with_git();
     
     // Verify git repository structure exists
     repo.assert_git_repo();
@@ -111,7 +111,7 @@ fn test_gitx_init_creates_proper_git_repo_structure() {
 
 #[test]
 fn test_complete_gitx_configuration_workflow() {
-    let repo = TestRepo::new_git();
+    let repo = TestRepo::with_git();
     
     // Use the built-in setup method
     repo.setup_gitx_config();
@@ -134,13 +134,13 @@ fn test_complete_gitx_configuration_workflow() {
 }
 
 #[test]
-fn test_convenience_constructors() {
-    // Test the convenience constructors from TestRepo
-    let configured_repo = TestRepo::new_configured();
-    assert!(configured_repo.is_gitx_configured());
-    configured_repo.assert_git_repo();
+fn test_builder_style_constructors() {
+    // Test the builder-style constructors
+    let gitx_repo = TestRepo::with_gitx();
+    assert!(gitx_repo.is_gitx_configured());
+    gitx_repo.assert_git_repo();
     
-    let repo_with_commits = TestRepo::new_with_commits();
+    let repo_with_commits = TestRepo::with_commits();
     assert!(repo_with_commits.is_gitx_configured());
     repo_with_commits
         .assert_git_repo()

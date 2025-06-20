@@ -3,20 +3,58 @@ use predicates::prelude::*;
 use std::process::Command as StdCommand;
 
 /// A test repository wrapper that provides convenient methods for testing gitx functionality
+/// 
+/// # Builder-Style API Examples
+/// 
+/// ```rust
+/// // For non-git scenarios (rare)
+/// let repo = TestRepo::empty();
+/// 
+/// // Most common: basic git repository
+/// let repo = TestRepo::with_git();
+/// 
+/// // Git repository with gitx configuration
+/// let repo = TestRepo::with_gitx();
+/// 
+/// // Fully configured with sample commits (great for testing)
+/// let repo = TestRepo::with_commits();
+/// ```
 pub struct TestRepo {
     pub temp_dir: assert_fs::TempDir,
 }
 
 impl TestRepo {
-    /// Create a new empty temporary directory (not yet a git repo)
-    pub fn new() -> Self {
+    /// Create an empty temporary directory (not a git repository)
+    /// Use this when you need to test non-git scenarios
+    pub fn empty() -> Self {
         Self {
             temp_dir: assert_fs::TempDir::new().unwrap(),
         }
     }
 
-    /// Initialize this directory as a git repository
-    pub fn init_git(&self) -> &Self {
+    /// Create a git repository with basic configuration
+    pub fn with_git() -> Self {
+        let repo = Self::empty();
+        repo.init_git_internal();
+        repo
+    }
+
+    /// Create a git repository with gitx configuration
+    pub fn with_gitx() -> Self {
+        let repo = Self::with_git();
+        repo.setup_gitx_config();
+        repo
+    }
+
+    /// Create a git repository with gitx configuration and sample commits
+    pub fn with_commits() -> Self {
+        let repo = Self::with_gitx();
+        repo.add_sample_commits();
+        repo
+    }
+
+    /// Initialize this directory as a git repository (internal method)
+    fn init_git_internal(&self) {
         let output = StdCommand::new("git")
             .args(&["init"])
             .current_dir(&self.temp_dir)
@@ -30,15 +68,13 @@ impl TestRepo {
             .expect("Failed to set git user.name");
         self.set_git_config("user.email", "test@example.com")
             .expect("Failed to set git user.email");
-        
-        self
     }
 
-    /// Create a new git repository (combines new() + init_git())
-    pub fn new_git() -> Self {
-        let repo = Self::new();
-        repo.init_git();
-        repo
+    /// Add sample commits to the repository (internal method)
+    fn add_sample_commits(&self) {
+        self.add_and_commit("initial.txt", "initial content", "Initial commit")
+            .add_and_commit("feature.txt", "feature content", "Add feature")
+            .add_and_commit("bugfix.txt", "bugfix content", "Fix bug");
     }
 
     /// Add a file with content to the repository
@@ -182,84 +218,24 @@ impl TestRepo {
     }
 }
 
-/// Builder pattern for creating test repositories with different configurations
-pub struct TestRepoBuilder {
-    repo: TestRepo,
-}
 
-impl TestRepoBuilder {
-    pub fn new() -> Self {
-        Self {
-            repo: TestRepo::new(),
-        }
-    }
-
-    pub fn with_git(self) -> Self {
-        self.repo.init_git();
-        self
-    }
-
-    pub fn with_gitx_config(self) -> Self {
-        self.repo.setup_gitx_config();
-        self
-    }
-
-    pub fn with_file(self, filename: &str, content: &str) -> Self {
-        self.repo.add_file(filename, content);
-        self
-    }
-
-    pub fn with_commit(self, filename: &str, content: &str, commit_message: &str) -> Self {
-        self.repo.add_and_commit(filename, content, commit_message);
-        self
-    }
-
-    pub fn with_multiple_commits(self) -> Self {
-        self.repo
-            .add_and_commit("initial.txt", "initial content", "Initial commit")
-            .add_and_commit("feature.txt", "feature content", "Add feature")
-            .add_and_commit("bugfix.txt", "bugfix content", "Fix bug");
-        self
-    }
-
-    pub fn build(self) -> TestRepo {
-        self.repo
-    }
-}
-
-impl Default for TestRepoBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// Convenience constructors
-impl TestRepo {
-    /// Create a fully configured test repository (git + gitx config)
-    pub fn new_configured() -> Self {
-        TestRepoBuilder::new()
-            .with_git()
-            .with_gitx_config()
-            .build()
-    }
-
-    /// Create a test repository with git, gitx config, and sample commits
-    pub fn new_with_commits() -> Self {
-        TestRepoBuilder::new()
-            .with_git()
-            .with_gitx_config()
-            .with_multiple_commits()
-            .build()
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     
     #[test]
-    fn test_repo_basic_functionality() {
-        let repo = TestRepo::new_git();
+    fn test_empty_directory() {
+        let repo = TestRepo::empty();
+        
+        // Should be a temp directory but not a git repo
+        assert!(repo.temp_dir.path().exists());
+        assert!(!repo.temp_dir.child(".git").path().exists());
+    }
+    
+    #[test]
+    fn test_with_git() {
+        let repo = TestRepo::with_git();
         
         // Test basic git functionality
         repo.assert_git_repo();
@@ -269,7 +245,7 @@ mod tests {
     
     #[test]
     fn test_repo_file_operations() {
-        let repo = TestRepo::new_git();
+        let repo = TestRepo::with_git();
         
         repo.add_file("test.txt", "test content")
             .assert_file_exists("test.txt")
@@ -278,7 +254,7 @@ mod tests {
     
     #[test]
     fn test_repo_commit_workflow() {
-        let repo = TestRepo::new_git();
+        let repo = TestRepo::with_git();
         
         repo.add_and_commit("README.md", "# Test Project", "Initial commit");
         
@@ -288,11 +264,11 @@ mod tests {
     }
     
     #[test]
-    fn test_gitx_configuration() {
-        let repo = TestRepo::new_git();
+    fn test_with_gitx() {
+        let repo = TestRepo::with_gitx();
         
-        repo.setup_gitx_config();
         assert!(repo.is_gitx_configured());
+        repo.assert_git_repo();
         
         // Test specific config values
         assert_eq!(repo.get_git_config("gitx.github.enabled"), Some("true".to_string()));
@@ -300,27 +276,23 @@ mod tests {
     }
     
     #[test]
-    fn test_builder_pattern() {
-        let repo = TestRepoBuilder::new()
-            .with_git()
-            .with_gitx_config()
-            .with_commit("feature.txt", "awesome feature", "Add awesome feature")
-            .build();
+    fn test_with_commits() {
+        let repo = TestRepo::with_commits();
         
         assert!(repo.is_gitx_configured());
-        repo.assert_file_exists("feature.txt")
-            .assert_file_content("feature.txt", "awesome feature");
+        repo.assert_git_repo()
+            .assert_file_exists("initial.txt")
+            .assert_file_exists("feature.txt")
+            .assert_file_exists("bugfix.txt");
     }
     
     #[test]
-    fn test_convenience_constructors() {
-        let repo1 = TestRepo::new_configured();
-        assert!(repo1.is_gitx_configured());
+    fn test_builder_style_workflow() {
+        let repo = TestRepo::with_git();
         
-        let repo2 = TestRepo::new_with_commits();
-        assert!(repo2.is_gitx_configured());
-        repo2.assert_file_exists("initial.txt")
-             .assert_file_exists("feature.txt")
-             .assert_file_exists("bugfix.txt");
+        repo.add_and_commit("feature.txt", "awesome feature", "Add awesome feature");
+        
+        repo.assert_file_exists("feature.txt")
+            .assert_file_content("feature.txt", "awesome feature");
     }
 }
