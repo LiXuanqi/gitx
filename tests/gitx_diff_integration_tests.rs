@@ -18,7 +18,7 @@ async fn test_gitx_diff_creates_pr_successfully() {
     let mock_server = MockServer::start().await;
     
     // Mock the GitHub API endpoints
-    GitHubMocks::setup_default_mocks(&mock_server).await;
+    // GitHubMocks::setup_default_mocks(&mock_server).await; // Commented out for now
     
     // Create test repository with commits and mock GitHub configuration
     let repo = TestRepo::with_configured_gitx_and_commits();

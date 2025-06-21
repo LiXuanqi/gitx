@@ -1,20 +1,5 @@
 use clap::Parser;
-
-mod git_ops;
-mod git_utils;
-mod github_utils;
-mod branch_naming;
-mod metadata;
-mod github;
-mod status_display;
-mod config;
-mod cli;
-mod commands;
-
-#[cfg(test)]
-mod mock_github;
-
-use cli::{Cli, Commands};
+use gitx::{cli::{Cli, Commands}, commands};
 
 
 #[tokio::main]

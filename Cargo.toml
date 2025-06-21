@@ -3,6 +3,14 @@ name = "gitx"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "gitx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gitx"
+path = "src/main.rs"
+
 [dependencies]
 async-trait = "0.1.88"
 chrono = { version = "0.4.41", features = ["serde"] }

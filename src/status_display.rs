@@ -1,5 +1,6 @@
 use crate::metadata::{PRStatusInfo, PRStatus};
 use crate::github::{GitHubClient, GitHubPRStatus, GitHubClientTrait};
+use crate::client_factory;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
@@ -56,7 +57,7 @@ async fn get_github_statuses(
         return Ok(HashMap::new());
     }
     
-    let github_client = GitHubClient::new().await?;
+    let github_client = client_factory::create_github_client().await?;
     let statuses = github_client.get_multiple_pr_statuses(&pr_numbers).await?;
     
     let mut status_map = HashMap::new();

@@ -4,6 +4,7 @@ use crate::metadata;
 use crate::github::{self, GitHubClientTrait};
 use crate::github_utils::generate_pr_body;
 use crate::git_utils::GitUtils;
+use crate::client_factory;
 
 pub fn get_all_branches() -> Result<Vec<String>, git2::Error> {
     let repo = Repository::open(".")?;
@@ -288,9 +289,9 @@ pub async fn create_pr_branch_with_github_client(
     if let Some(client) = github_client {
         create_transient_pr_branch_with_github_client(commit_info, client).await
     } else {
-        // Create a real GitHub client for production use
-        let github_client = github::GitHubClient::new().await?;
-        create_transient_pr_branch_with_github_client(commit_info, &github_client).await
+        // Create a GitHub client using factory (real in production, mock in tests)
+        let github_client = client_factory::create_github_client().await?;
+        create_transient_pr_branch_with_github_client(commit_info, &*github_client).await
     }
 }
 
@@ -374,9 +375,9 @@ pub async fn create_incremental_commit_with_github_client(
     if let Some(client) = github_client {
         create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, client).await
     } else {
-        // Create a real GitHub client for production use
-        let github_client = github::GitHubClient::new().await?;
-        create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, &github_client).await
+        // Create a GitHub client using factory (real in production, mock in tests)
+        let github_client = client_factory::create_github_client().await?;
+        create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, &*github_client).await
     }
 }
 
@@ -465,9 +466,9 @@ pub async fn create_transient_incremental_commit_with_github(
         return Ok(());
     }
     
-    // Create a real GitHub client for production use
-    let github_client = github::GitHubClient::new().await?;
-    create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, &github_client).await
+    // Create a GitHub client using factory (real in production, mock in tests)
+    let github_client = client_factory::create_github_client().await?;
+    create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, &*github_client).await
 }
 
 /// Land (cleanup) merged PRs by detecting merged status from GitHub and cleaning up local branches
@@ -488,8 +489,8 @@ pub async fn land_merged_prs(all: bool, dry_run: bool) -> Result<(), Box<dyn std
     
     println!("🔍 Checking PR statuses...");
     
-    // Get GitHub client
-    let github_client = github::GitHubClient::new().await?;
+    // Get GitHub client using factory (real in production, mock in tests)
+    let github_client = client_factory::create_github_client().await?;
     
     // Find PRs that have GitHub PR numbers
     let prs_to_check: Vec<_> = pr_statuses.iter()
