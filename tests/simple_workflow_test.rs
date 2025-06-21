@@ -27,20 +27,16 @@ async fn test_simple_workflow_with_cli_and_mock() {
     repo.git_commit("Add new feature");
     
     // Step 4: Run gitx diff to create GitHub PR
-    // The factory function will automatically use MockGitHubClient in test mode
+    // Force CLI to use MockGitHubClient via environment variable
     let mut cmd = Command::cargo_bin("gitx").unwrap();
-    let assert_result = cmd
+    cmd
         .current_dir(&repo.temp_dir)
+        .env("GITX_USE_MOCK_GITHUB", "1") // Force CLI binary to use MockGitHubClient
         .arg("diff")
         .assert()
         .success()
         .stdout(predicate::str::contains("Created GitHub PR #1")) // Mock returns PR #1
-        .stdout(predicate::str::contains("(transient branch deleted locally)"));
+        .stdout(predicate::str::contains("(transient branch deleted locally)"))
+        .stderr(predicate::str::is_empty()); // Assert no error logs
 
-    // Print the captured output for debugging
-    let output = assert_result.get_output();
-    println!("STDOUT: {}", String::from_utf8_lossy(&output.stdout));
-    println!("STDERR: {}", String::from_utf8_lossy(&output.stderr));
-    
-    println!("✅ Test passed: CLI workflow with MockGitHubClient works correctly");
 }

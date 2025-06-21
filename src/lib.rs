@@ -10,5 +10,5 @@ pub mod cli;
 pub mod commands;
 pub mod client_factory;
 
-#[cfg(test)]
+// Make mock_github available for CLI integration testing
 pub mod mock_github;
