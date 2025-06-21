@@ -272,10 +272,11 @@ pub fn create_incremental_commit(
     Ok(())
 }
 
-/// Create a PR branch and optionally create GitHub PR
-pub async fn create_pr_branch_with_github(
+/// Create a PR branch with dependency injection for GitHub client
+pub async fn create_pr_branch_with_github_client(
     commit_info: &CommitInfo,
     enable_github: bool,
+    github_client: Option<&dyn GitHubClientTrait>,
 ) -> Result<Option<github::PRInfo>, Box<dyn std::error::Error>> {
     if !enable_github {
         // Local-only mode: create persistent local branch
@@ -284,19 +285,29 @@ pub async fn create_pr_branch_with_github(
     }
     
     // GitHub mode: create transient branch, push, create PR, then delete local branch
-    create_transient_pr_branch_with_github(commit_info).await
+    if let Some(client) = github_client {
+        create_transient_pr_branch_with_github_client(commit_info, client).await
+    } else {
+        // Create a real GitHub client for production use
+        let github_client = github::GitHubClient::new().await?;
+        create_transient_pr_branch_with_github_client(commit_info, &github_client).await
+    }
 }
 
-/// Create a transient PR branch that only exists on GitHub (deleted locally after push)
-pub async fn create_transient_pr_branch_with_github(
+/// Create a PR branch and optionally create GitHub PR (legacy wrapper)
+pub async fn create_pr_branch_with_github(
     commit_info: &CommitInfo,
+    enable_github: bool,
 ) -> Result<Option<github::PRInfo>, Box<dyn std::error::Error>> {
-    // Check if GitHub token is available
-    if !github::check_github_token() {
-        println!("Warning: GITHUB_TOKEN not set, skipping GitHub PR creation");
-        return Ok(None);
-    }
-    
+    create_pr_branch_with_github_client(commit_info, enable_github, None).await
+}
+
+
+/// Create a transient PR branch with dependency injection for GitHub client
+pub async fn create_transient_pr_branch_with_github_client(
+    commit_info: &CommitInfo,
+    github_client: &dyn GitHubClientTrait,
+) -> Result<Option<github::PRInfo>, Box<dyn std::error::Error>> {
     let repo = Repository::open(".").map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     
     // 1. Create temporary local branch
@@ -307,10 +318,7 @@ pub async fn create_transient_pr_branch_with_github(
     // 2. Push branch to remote
     GitUtils::push_branch(&commit_info.potential_branch_name).await?;
     
-    // 3. Create GitHub client for PR operations
-    let github_client = github::GitHubClient::new().await?;
-    
-    // 4. Create metadata (before deleting local branch)
+    // 3. Create metadata (before deleting local branch)
     let commit_message = commit.message().unwrap_or("");
     let commit_metadata = metadata::CommitMetadata::new_branch_created(
         commit_info.potential_branch_name.clone(),
@@ -347,12 +355,13 @@ pub async fn create_transient_pr_branch_with_github(
     Ok(Some(pr_info))
 }
 
-/// Create incremental commit and optionally update GitHub PR
-pub async fn create_incremental_commit_with_github(
+/// Create incremental commit with dependency injection for GitHub client
+pub async fn create_incremental_commit_with_github_client(
     original_commit_oid: &Oid,
     updated_commit_oid: &Oid,
     pr_metadata: &metadata::CommitMetadata,
     enable_github: bool,
+    github_client: Option<&dyn GitHubClientTrait>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !enable_github {
         // Local-only mode: create persistent local incremental commit
@@ -362,23 +371,34 @@ pub async fn create_incremental_commit_with_github(
     }
     
     // GitHub mode: create transient incremental commit
-    create_transient_incremental_commit_with_github(original_commit_oid, updated_commit_oid, pr_metadata).await
+    if let Some(client) = github_client {
+        create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, client).await
+    } else {
+        // Create a real GitHub client for production use
+        let github_client = github::GitHubClient::new().await?;
+        create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, &github_client).await
+    }
 }
 
-/// Create a transient incremental commit that only exists on GitHub (deleted locally after push)
-pub async fn create_transient_incremental_commit_with_github(
+/// Create incremental commit and optionally update GitHub PR (legacy wrapper)
+pub async fn create_incremental_commit_with_github(
     original_commit_oid: &Oid,
     updated_commit_oid: &Oid,
     pr_metadata: &metadata::CommitMetadata,
+    enable_github: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    create_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, enable_github, None).await
+}
+
+/// Create a transient incremental commit with dependency injection for GitHub client  
+pub async fn create_transient_incremental_commit_with_github_client(
+    original_commit_oid: &Oid,
+    updated_commit_oid: &Oid,
+    pr_metadata: &metadata::CommitMetadata,
+    github_client: &dyn GitHubClientTrait,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if pr_metadata.github_pr_number.is_none() {
         println!("Warning: No GitHub PR number found, skipping PR update");
-        return Ok(());
-    }
-    
-    // Check if GitHub token is available
-    if !github::check_github_token() {
-        println!("Warning: GITHUB_TOKEN not set, skipping GitHub PR update");
         return Ok(());
     }
     
@@ -410,10 +430,7 @@ pub async fn create_transient_incremental_commit_with_github(
     // 3. Push the updated branch to remote
     GitUtils::push_branch(&pr_metadata.pr_branch_name).await?;
     
-    // 4. Create GitHub client for PR operations
-    let github_client = github::GitHubClient::new().await?;
-    
-    // 5. Update metadata to track this incremental commit
+    // 4. Update metadata to track this incremental commit
     let updated_metadata = pr_metadata.clone().add_incremental_commit(
         updated_commit_oid.to_string(),
         updated_commit.message().unwrap_or("").to_string(),
@@ -434,6 +451,23 @@ pub async fn create_transient_incremental_commit_with_github(
     println!("Updated GitHub PR #{} (transient branch deleted locally)", pr_number);
     
     Ok(())
+}
+
+/// Create a transient incremental commit that only exists on GitHub (legacy wrapper)
+pub async fn create_transient_incremental_commit_with_github(
+    original_commit_oid: &Oid,
+    updated_commit_oid: &Oid,
+    pr_metadata: &metadata::CommitMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if GitHub token is available
+    if !github::check_github_token() {
+        println!("Warning: GITHUB_TOKEN not set, skipping GitHub PR update");
+        return Ok(());
+    }
+    
+    // Create a real GitHub client for production use
+    let github_client = github::GitHubClient::new().await?;
+    create_transient_incremental_commit_with_github_client(original_commit_oid, updated_commit_oid, pr_metadata, &github_client).await
 }
 
 /// Land (cleanup) merged PRs by detecting merged status from GitHub and cleaning up local branches
