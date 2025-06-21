@@ -7,7 +7,7 @@ use wiremock::{
 };
 
 mod test_utils;
-use test_utils::{TestRepo, GitHubMocks};
+use test_utils::TestRepo;
 
 /// Integration tests for `gitx diff` command using mock GitHub API server
 /// This tests the full workflow without making real GitHub API calls

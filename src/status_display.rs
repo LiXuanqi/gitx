@@ -1,5 +1,5 @@
 use crate::metadata::{PRStatusInfo, PRStatus};
-use crate::github::{GitHubClient, GitHubPRStatus};
+use crate::github::{GitHubClient, GitHubPRStatus, GitHubClientTrait};
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 

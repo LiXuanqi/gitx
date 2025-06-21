@@ -1,7 +1,9 @@
 use git2::{Repository, BranchType, Oid};
 use crate::branch_naming;
 use crate::metadata;
-use crate::github;
+use crate::github::{self, GitHubClientTrait};
+use crate::github_utils::generate_pr_body;
+use crate::git_utils::GitUtils;
 
 pub fn get_all_branches() -> Result<Vec<String>, git2::Error> {
     let repo = Repository::open(".")?;
@@ -302,11 +304,13 @@ pub async fn create_transient_pr_branch_with_github(
     let mut temp_branch = repo.branch(&commit_info.potential_branch_name, &commit, false)
         .map_err(|e| e)?;
     
-    // 2. Create GitHub client and push branch
-    let github_client = github::GitHubClient::new().await?;
-    github_client.push_branch(&commit_info.potential_branch_name).await?;
+    // 2. Push branch to remote
+    GitUtils::push_branch(&commit_info.potential_branch_name).await?;
     
-    // 3. Create metadata (before deleting local branch)
+    // 3. Create GitHub client for PR operations
+    let github_client = github::GitHubClient::new().await?;
+    
+    // 4. Create metadata (before deleting local branch)
     let commit_message = commit.message().unwrap_or("");
     let commit_metadata = metadata::CommitMetadata::new_branch_created(
         commit_info.potential_branch_name.clone(),
@@ -317,7 +321,7 @@ pub async fn create_transient_pr_branch_with_github(
     
     // 4. Create the PR
     let pr_title = commit_message.lines().next().unwrap_or("Untitled commit").to_string();
-    let pr_body = github_client.generate_pr_body(&commit_metadata, commit_message);
+    let pr_body = generate_pr_body(&commit_metadata, commit_message);
     
     // Determine the appropriate base branch for this commit
     let base_branch = determine_base_branch_for_commit(&commit_info.id)
@@ -403,11 +407,13 @@ pub async fn create_transient_incremental_commit_with_github(
         &[&updated_commit],
     ).map_err(|e| e)?;
     
-    // 3. Push the updated branch to GitHub
-    let github_client = github::GitHubClient::new().await?;
-    github_client.push_branch(&pr_metadata.pr_branch_name).await?;
+    // 3. Push the updated branch to remote
+    GitUtils::push_branch(&pr_metadata.pr_branch_name).await?;
     
-    // 4. Update metadata to track this incremental commit
+    // 4. Create GitHub client for PR operations
+    let github_client = github::GitHubClient::new().await?;
+    
+    // 5. Update metadata to track this incremental commit
     let updated_metadata = pr_metadata.clone().add_incremental_commit(
         updated_commit_oid.to_string(),
         updated_commit.message().unwrap_or("").to_string(),
@@ -418,7 +424,7 @@ pub async fn create_transient_incremental_commit_with_github(
     
     // 5. Update the GitHub PR
     let commit_message = updated_commit.message().unwrap_or("");
-    let pr_body = github_client.generate_pr_body(&updated_metadata, commit_message);
+    let pr_body = generate_pr_body(&updated_metadata, commit_message);
     let pr_number = pr_metadata.github_pr_number.unwrap();
     github_client.update_pr(pr_number, None, Some(&pr_body)).await?;
     
